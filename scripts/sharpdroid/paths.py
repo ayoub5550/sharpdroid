@@ -50,6 +50,12 @@ BUILD_BUNDLE = BUILD / "bundle"
 HOST_LIBRARY = BUILD_HOST / "libsharpdroid-host-layer.so"
 HOST_SHELL = BUILD_HOST / "sharpdroid-host-layer"
 
+# FEXCore's own generated header, naming the FEX the two above were compiled from. it is written
+# when the host layer is configured and read by the compiler that builds it, so it moves only when
+# they are rebuilt -- which is why the APK step reads its version here rather than describing the
+# submodule, whose checkout says what is true now rather than what was compiled.
+HOST_FEX_VERSION_HEADER = BUILD_HOST / "generated" / "git_version.h"
+
 # what the host cmake project will not configure without.
 ADRENOTOOLS_LIBRARY = BUILD_ADRENOTOOLS / "libadrenotools.a"
 

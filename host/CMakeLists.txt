@@ -14,7 +14,8 @@ cmake_minimum_required(VERSION 3.22)
 project(fexcore-android CXX C ASM)
 
 # the submodule is the intended source. the sibling checkout beside the repository is a fallback so
-# a workspace that predates the submodule still builds; both are the same pristine FEX-2607.
+# a workspace that predates the submodule still builds; whichever answers is described below and
+# named in what the build produces, because the two are not obliged to be at the same commit.
 set(FEX_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../external/FEX" CACHE PATH "Path to the FEX checkout")
 get_filename_component(FEX_ROOT "${FEX_ROOT}" ABSOLUTE)
 if (NOT EXISTS "${FEX_ROOT}/FEXCore/CMakeLists.txt")
@@ -78,8 +79,49 @@ set(ENABLE_ZYDIS FALSE CACHE BOOL "" FORCE)
 set(ENABLE_LTO FALSE CACHE BOOL "" FORCE)
 set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
 set(BUILD_STEAM_SUPPORT FALSE CACHE BOOL "" FORCE)
-set(OVERRIDE_VERSION "FEX-2607" CACHE STRING "" FORCE)
-set(OVERRIDE_HASH "sharpdroid" CACHE STRING "" FORCE)
+
+# --- the FEX identity compiled into the host layer -------------------------------------
+#
+# FEXCore generates `generated/git_version.h` from GIT_DESCRIBE_STRING and GIT_HASH_ARRAY and sets
+# neither of them itself. OVERRIDE_VERSION and OVERRIDE_HASH, which are what a FEX build would
+# normally answer that with, are read only by FEX's top-level CMakeLists -- the one file this build
+# deliberately does not use -- so setting those here names a value nothing reads, and the header
+# comes out with an empty version and a zeroed hash. these are the variables it actually consumes.
+#
+# **both are load-bearing and neither may be invented.** the version is what the app reports and
+# what the guest reads out of its CPUID leaf; the hash is what CodeCache compares a persisted cache
+# against, so a fabricated one is identical across every build and lets a cache written by some
+# other FEX be accepted as this one's. and a version hardcoded here states something about the
+# checkout that stops being true the moment the submodule moves, with nothing anywhere to say so.
+#
+# an absent or untagged checkout leaves them empty, which is the degradation FEX's own build takes:
+# the version becomes an empty string and the hash twenty zero bytes.
+find_package(Git QUIET)
+set(GIT_DESCRIBE_STRING "")
+set(GIT_HASH "")
+if (GIT_FOUND)
+  # --dirty is the marker this repository should never see: FEX is a pinned submodule that is never
+  # modified, so a suffix here is that rule having been broken rather than an ordinary working tree.
+  # --abbrev=7 is what holds an untagged commit's description inside the 32 characters CPUID.cpp
+  # asserts against.
+  execute_process(
+    COMMAND ${GIT_EXECUTABLE} describe --tags --dirty --abbrev=7
+    WORKING_DIRECTORY "${FEX_ROOT}"
+    OUTPUT_VARIABLE GIT_DESCRIBE_STRING
+    ERROR_QUIET
+    OUTPUT_STRIP_TRAILING_WHITESPACE)
+  # the whole hash and never an abbreviation. CodeCache's header field is twenty bytes wide and the
+  # generated array is asserted against it, so a short one is a compile error rather than a subtly
+  # weaker key.
+  execute_process(
+    COMMAND ${GIT_EXECUTABLE} rev-parse HEAD
+    WORKING_DIRECTORY "${FEX_ROOT}"
+    OUTPUT_VARIABLE GIT_HASH
+    ERROR_QUIET
+    OUTPUT_STRIP_TRAILING_WHITESPACE)
+endif()
+string(REGEX REPLACE "(..|.$)" "0x\\1, " GIT_HASH_ARRAY "${GIT_HASH}")
+message(STATUS "FEX version: ${GIT_DESCRIBE_STRING}")
 
 # vixl: we only ever emit aarch64, and its tests/tools pull in host-only deps.
 set(VIXL_TARGET_AARCH64 ON CACHE BOOL "" FORCE)

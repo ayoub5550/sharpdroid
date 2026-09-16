@@ -1170,7 +1170,21 @@ def repository_commit():
 
 
 def fex_version():
-    """the FEXCore the host layer is linked against, in FEX's own release naming.
+    """the FEXCore the host layer was compiled from, in FEX's own release naming.
+
+    **read out of the host layer's build tree rather than asked of git**, because the value
+    describes a binary and git only knows what the checkout says today. this step does not build the
+    host layer -- packaging after moving the submodule and before rebuilding is an ordinary thing to
+    do, and describing the submodule there labels the archive with a FEXCore it does not contain.
+    the About screen is exactly where somebody goes to check that, so it is the one number that must
+    not be taken on trust.
+
+    `generated/git_version.h` is FEXCore's own, written when the host layer is configured and read
+    by the compiler that builds it. being a compile input is what holds the two together: a version
+    that changes recompiles CPUID.cpp and CodeCache.cpp and relinks, so a header naming one FEXCore
+    beside a library built from another is not a state an ordinary build reaches. **the string does
+    not survive into the library to be read back** -- it is nine bytes of a constexpr array and the
+    compiler folds it into immediates -- so the header is what answers, rather than the binary.
 
     FEX tags a release a month and names it for the month -- `FEX-2607` -- so `describe` against the
     tags is the version a person would quote, and it degrades by itself: a commit past a tag is that
@@ -1181,15 +1195,16 @@ def fex_version():
     is never modified, so a suffix here is not a stale working tree -- it is that rule having been
     broken, and the About screen is a reasonable place for it to surface.
 
-    empty when there is no git, no submodule or no tags, for the reason `repository_commit` is: not
+    empty when the header is missing or names no version, for the reason `repository_commit` is: not
     knowing is a state the screen is written for, and a placeholder is a string somebody would try to
     resolve.
     """
-    described = subprocess.run(["git", "-C", str(paths.ROOT / "external" / "FEX"),
-                                "describe", "--tags", "--dirty"],
-                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                               encoding="utf-8", errors="replace")
-    return described.stdout.strip() if described.returncode == 0 else ""
+    try:
+        header = paths.HOST_FEX_VERSION_HEADER.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    described = re.search(r'#define\s+GIT_DESCRIBE_STRING\s+"([^"]*)"', header)
+    return described.group(1).strip() if described else ""
 
 
 def build_type(release):
