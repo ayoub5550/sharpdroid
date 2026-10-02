@@ -2,8 +2,9 @@
 <!--
   a play arrow, for the button that starts a run.
 
-  Material Symbols' own, so it is the glyph every other app's play button is rather than a triangle
-  of ours that is nearly it. the icons this app draws by hand are the ones with no such counterpart.
+  Material Symbols' own filled play, so it is the glyph every other app's play button is rather than a
+  triangle of ours that is nearly it. the icons this app draws by hand are the ones with no such
+  counterpart.
 
   tinted from the theme, so it follows light and dark without a second copy. that is the role the plus
   on the managers' button takes too, since it is the same button.
@@ -17,6 +18,6 @@
 
     <path
         android:fillColor="@android:color/white"
-        android:pathData="M320,760L320,200L760,480L320,760ZM400,480L400,480L400,480ZM400,614L610,480L400,346L400,614Z" />
+        android:pathData="M320,760L320,200L760,480L320,760Z" />
 
 </vector>
