@@ -102,11 +102,16 @@
 
     </com.google.android.material.card.MaterialCardView>
 
+    <!--
+      **the run's two actions share one row, half each**, which leaves the log the height a second
+      row would take. the 8dp between them is a margin, the button style insetting a button above
+      and below and never at its sides.
+    -->
     <LinearLayout
         android:id="@+id/actions"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="vertical"
+        android:orientation="horizontal"
         android:paddingHorizontal="10dp"
         android:paddingTop="10dp">
 
@@ -117,25 +122,29 @@
           accent's, and the accent is named by every scheme here where the tonal and outlined styles
           reach for roles two of them leave to Material's baseline.
         -->
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/exit"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginEnd="8dp"
+            android:layout_weight="1"
+            android:text="@string/overlay_exit"
+            app:icon="@drawable/ic_exit_to_app"
+            app:iconGravity="textStart" />
+
         <!--
-          pausing and resuming, above leaving: the one of the two that is taken back. filled like Exit
-          for the same reason Exit is - the accent is the role every scheme names - and its label and
-          icon say what a tap does now, so they swap while the game is paused. GuestOverlay sets both.
+          pausing and resuming, right of leaving: the one of the two that is taken back. filled like
+          Exit for the same reason Exit is - the accent is the role every scheme names - and its
+          label and icon say what a tap does now, so they swap while the game is paused.
+          GuestOverlay sets both.
         -->
         <com.google.android.material.button.MaterialButton
             android:id="@+id/pause"
-            android:layout_width="match_parent"
+            android:layout_width="0dp"
             android:layout_height="wrap_content"
+            android:layout_weight="1"
             android:text="@string/overlay_pause"
             app:icon="@drawable/ic_pause"
-            app:iconGravity="textStart" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/exit"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="@string/overlay_exit"
-            app:icon="@drawable/ic_exit_to_app"
             app:iconGravity="textStart" />
 
     </LinearLayout>

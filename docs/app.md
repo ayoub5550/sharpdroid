@@ -253,7 +253,7 @@ lines wrap, where the desktop log viewer's do not. a line here carries a level, 
 
 **Exit** calls the same ending every launch that is not the guest's own `exit_group` already takes: the activity finishes and the process goes with it. **the guest is not asked to stop first**, because there is nothing to ask with — its threads are inside translated code, which is the same reason the host layer answers `exit_group` with `_exit`. there is **no confirmation behind it**, deliberately: reaching it is already a back press and a deliberate tap on something that says what it does, and a dialog would be a third step on the only way out of a run.
 
-**Pause** sits above it and reads **Resume** while the game is paused, with the icon swapped to match: each says what a tap does now. pausing leaves the panel open, since whoever paused has usually stopped to read the log; resuming closes it, since whoever resumed wants the game. the panel is told the state rather than asking for it, because the game also pauses from places the panel never sees — see [pausing](#pausing).
+**Pause** sits beside it, on its right, each taking half the row, and reads **Resume** while the game is paused, with the icon swapped to match: each says what a tap does now. pausing leaves the panel open, since whoever paused has usually stopped to read the log; resuming closes it, since whoever resumed wants the game. the panel is told the state rather than asking for it, because the game also pauses from places the panel never sees — see [pausing](#pausing).
 
 both are **buttons rather than cards**, filled in the accent — which every scheme here names, where the tonal and outlined styles reach for roles two of them leave to Material's own baseline.
 

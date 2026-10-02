@@ -26,7 +26,7 @@ import com.google.android.material.button.MaterialButton
  * finished the activity would end a game silently, at the depth of one accidental gesture -- the game
  * survives the app being left, and does not survive the activity ending. here back opens this, back
  * again closes it, and leaving is a labelled button inside it -- two deliberate acts, of which the
- * second says what it does. pausing is the button above it.
+ * second says what it does. pausing is the button beside it.
  *
  * **most of it is the log**, which is what the panel is for now: everything this process has printed,
  * in the order it printed it -- the emulator's own logger, its raw console writes, the host layer's

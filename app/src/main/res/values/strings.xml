@@ -497,12 +497,13 @@
     <string name="loading_percent">%1$d%%</string>
 
     <!-- the panel the back button opens over a running game. a verb alone, because the panel is
-         drawn over the game, so the game is what it acts on. "Exit" rather than "Quit" or "Close":
-         "Close" reads as closing the panel, and the word has to be unambiguous enough to be tapped
-         without a confirmation behind it - which there deliberately is not, because reaching this
-         button is already a back press and a deliberate tap. -->
+         drawn over the game, so the game is what it acts on, and a half-width button has no room
+         for the noun as well. "Exit" rather than "Quit" or "Close": "Close" reads as closing the
+         panel, and the word has to be unambiguous enough to be tapped without a confirmation
+         behind it - which there deliberately is not, because reaching this button is already a
+         back press and a deliberate tap. -->
     <string name="overlay_exit">Exit</string>
-    <!-- the action above it. each names what a tap does to the game, so the button reads the other
+    <!-- the action beside it. each names what a tap does to the game, so the button reads the other
          way round while the game is paused. -->
     <string name="overlay_pause">Pause</string>
     <string name="overlay_resume">Resume</string>
