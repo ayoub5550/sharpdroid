@@ -100,7 +100,7 @@ two modes, and which one is in force decides how much of this file is reached at
 
 **the answer is latched the first time it is asked, not recomputed.** the proc-address gate consults it, `vkCreateInstance` decides an extension list from it, and the dispatch switch reads it on every call; an answer that changed halfway through would mean an instance created for one window system serving commands belonging to the other.
 
-**which commands the thunk answers itself is decided in exactly one place**, because the dispatch switch and the proc-address gate must give the same answer. under android WSI that list is one command long: everything else is a genuine loader entry point that does the right thing, so those commands stop being ours and go back to being ordinary forwarded vulkan.
+**which commands the thunk answers itself is decided in exactly one place**, because the dispatch switch and the proc-address gate must give the same answer. under android WSI that list is one command long: everything else is a genuine loader entry point that does the right thing, so those commands stop being ours and go back to being ordinary forwarded vulkan — with the guest's surface handle swapped for the real one on the way through, see below.
 
 ### the translation point
 
@@ -114,6 +114,22 @@ the instance extension list is rewritten in both directions to match:
 - **`VK_KHR_android_surface` is added** under android WSI. the guest never asked for it and never learns it is there — the surface it asked for by one name is created by another, and the instance needs the extension that other name belongs to.
 
 `vkEnumerateInstanceExtensionProperties` appends the headless extension to whatever the host reported, in both halves of the two-call idiom so the count and the array agree. only the unlayered query is extended: a layer name means the guest is asking about something the thunk does not provide at all. `vkEnumerateDeviceExtensionProperties` appends `VK_KHR_swapchain` **only when the host has not already named it** — on android the loader implements it over the driver's private extension, so it is usually already there.
+
+### a surface that outlives its window
+
+**under android WSI the guest's surface is a real one, made on the app's window, and that window does not live as long as the guest.** android takes a `SurfaceView`'s surface away whenever the activity stops — home, the screen going off, anything opening over the game — because the view's surface goes with its window's, whatever lifecycle the view asks for; `SURFACE_LIFECYCLE_FOLLOWS_ATTACHMENT` changes nothing here. the driver then answers the next acquire with `VK_ERROR_SURFACE_LOST_KHR`, the guest's presenter treats that as fatal, and the run ends.
+
+so **the handle the guest holds stays the one it was given, and what it stands for moves.** every forwarded command that names it — the four surface queries, the swapchain constructor, the `2KHR` queries' `pSurfaceInfo`, and the rest of the commands that take a `VkSurfaceKHR` — is handed the real surface on the window that is current now, made the first time anything asks after the window changed. **a lost surface is reported to the guest as `VK_ERROR_OUT_OF_DATE_KHR`** on acquire and present, which the presenter already answers by recreating its swapchain against the same handle, which by then means the new window. the forwarded-command list is unchanged; only their surface argument is rewritten.
+
+| | |
+| --- | --- |
+| **the guest's handle is the first real surface** | kept until the guest destroys it, so a command that reaches the driver untranslated names a surface on a dead window and gets an error back, rather than naming a destroyed object |
+| **a later surface is destroyed when it is both replaced and unused** | vulkan requires a surface to outlive its swapchains, so each swapchain is counted against the surface it was made on |
+| **a window is identified by a count, not a pointer** | the count moves whenever the window does, through null included, so a window freed and a new one allocated at the same address cannot compare equal. the same window handed over twice — android repeats one whenever the view is laid out again — moves nothing, since a surface remade on a window the swapchain still owns would be refused as in use |
+| **a surface lost on a window is never remade on it** | the driver reports the loss before the app is told the window went away, so the next surface waits for a newer window |
+| **with no window, a surface query waits for one** | reached only by a guest that keeps rendering while nothing is on screen, since the app pauses the guest before its window goes — see [`app.md`](app.md). the alternative is an error, and every error a surface query can return is one the presenter dies on |
+
+**the window swap is under the same lock as the surface's creation**, and the app releases the window it held only after the swap returns, so a guest thread making a surface on that window has finished with the pointer before it can be freed.
 
 ### rotation, and the flag it costs
 

@@ -24,6 +24,7 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -671,6 +672,238 @@ PFN Host(const char* Name) {
   return reinterpret_cast<PFN>(Fn);
 }
 
+// --- a surface that outlives its window ------------------------------------------------------
+//
+// **under android WSI the guest's surface is a real one, made on the app's window, and the window
+// does not live as long as the guest.** android takes a SurfaceView's surface away whenever the
+// activity stops -- home, the screen going off, anything opening over the game -- because the
+// view's surface goes with its window's, whatever lifecycle the view asks for. the driver then
+// answers the next acquire with VK_ERROR_SURFACE_LOST_KHR, the guest's presenter treats that as
+// fatal, and the run ends.
+//
+// so the handle the guest holds stays the one it was given and what it stands for moves. every
+// command that names it is handed the real surface on the window that is current now, made the
+// first time anything asks; and a lost surface is reported to the guest as
+// VK_ERROR_OUT_OF_DATE_KHR, which its presenter already answers by recreating the swapchain --
+// against the same handle, which by then means the new window.
+//
+// **the handle the guest was given is the first real surface, and that one is kept until the guest
+// destroys it.** a command that reaches the driver untranslated then names a surface on a dead
+// window and gets an error back, rather than naming a destroyed object. every later surface is
+// destroyed once it has been replaced and the last swapchain made on it is gone, since vulkan
+// requires a surface to outlive its swapchains.
+struct RealSurface {
+  VkSurfaceKHR Handle {};
+  ///< which window it was made on, as the count SetAndroidWindow keeps rather than as a pointer. the
+  ///< count moves whenever the window does, through null included, so a window freed and a new one
+  ///< allocated at the same address cannot compare equal.
+  uint64_t Generation {};
+  uint32_t Swapchains {};
+  bool Retired {};
+};
+
+// a leaf: held across the one driver call that makes a surface and never while waiting.
+std::mutex SurfaceLock;
+std::condition_variable WindowChanged;
+uint64_t WindowGeneration {};
+// the generation a surface was lost on. nothing is made on it again, because the window it names may
+// still be the dead one -- the driver reports the loss before the app is told the window went away.
+uint64_t LostGeneration {};
+VkSurfaceKHR GuestSurface {};
+std::vector<RealSurface> RealSurfaces;
+std::unordered_map<uint64_t, VkSurfaceKHR> SwapchainSurface;
+uint64_t SurfaceRebuilds {};
+
+RealSurface* FindReal(VkSurfaceKHR Handle) {
+  for (auto& Real : RealSurfaces) {
+    if (Real.Handle == Handle) {
+      return &Real;
+    }
+  }
+  return nullptr;
+}
+
+// destroys every replaced surface whose swapchains are gone, except the one whose value the guest
+// holds. called with SurfaceLock held.
+void DropRetiredSurfaces() {
+  auto Destroy = Host<PFN_vkDestroySurfaceKHR>("vkDestroySurfaceKHR");
+  for (auto It = RealSurfaces.begin(); It != RealSurfaces.end();) {
+    if (It->Retired && It->Swapchains == 0 && It->Handle != GuestSurface) {
+      if (Destroy) {
+        Destroy(GuestInstance, It->Handle, nullptr);
+      }
+      It = RealSurfaces.erase(It);
+    } else {
+      ++It;
+    }
+  }
+}
+
+// makes a real surface on the current window, waiting for one if there is none. called with
+// SurfaceLock held through Held.
+//
+// **the wait is reached only by a guest that keeps rendering while nothing is on screen.** a paused
+// guest never asks, and one that is not paused has nowhere to draw: the alternative to waiting is an
+// error, and every error a surface query can return is one the guest's presenter dies on.
+VkResult MakeRealSurface(std::unique_lock<std::mutex>& Held, RealSurface& Out) {
+  auto Create = Host<PFN_vkCreateAndroidSurfaceKHR>("vkCreateAndroidSurfaceKHR");
+  if (!Create) {
+    return VK_ERROR_INITIALIZATION_FAILED;
+  }
+  bool Said = false;
+  for (;;) {
+    ::ANativeWindow* Window = AppWindow.load(std::memory_order_acquire);
+    if (Window && WindowGeneration > LostGeneration) {
+      VkAndroidSurfaceCreateInfoKHR Info {};
+      Info.sType = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR;
+      Info.window = Window;
+      const VkResult Result = Create(GuestInstance, &Info, nullptr, &Out.Handle);
+      Out.Generation = WindowGeneration;
+      return Result;
+    }
+    if (!Said) {
+      Said = true;
+      std::printf("[vulkan] the guest wants a surface and there is no window; waiting for one\n");
+      std::fflush(stdout);
+    }
+    WindowChanged.wait(Held);
+  }
+}
+
+// what the guest's surface stands for now. a handle that is not the guest's surface is returned as
+// it is and leaves Ours false, which is every handle under headless WSI.
+VkSurfaceKHR CurrentSurface(VkSurfaceKHR Asked, bool& Ours) {
+  std::unique_lock Held(SurfaceLock);
+  Ours = GuestSurface && Asked == GuestSurface && !RealSurfaces.empty();
+  if (!Ours) {
+    return Asked;
+  }
+  RealSurface& Current = RealSurfaces.back();
+  if (!Current.Retired && Current.Generation == WindowGeneration && AppWindow.load(std::memory_order_acquire)) {
+    return Current.Handle;
+  }
+  RealSurface Next {};
+  const VkResult Result = MakeRealSurface(Held, Next);
+  if (Result != VK_SUCCESS) {
+    std::printf("[vulkan] could not remake the surface on the new window: %d\n", static_cast<int>(Result));
+    return RealSurfaces.back().Handle;
+  }
+  RealSurfaces.back().Retired = true;
+  RealSurfaces.push_back(Next);
+  ++SurfaceRebuilds;
+  std::printf("[vulkan] surface remade on a new window (%llu so far): %ux%u\n",
+              static_cast<unsigned long long>(SurfaceRebuilds), SurfaceWidth, SurfaceHeight);
+  DropRetiredSurfaces();
+  return Next.Handle;
+}
+
+// a real surface the driver has called lost. the next command naming the guest's surface waits for
+// a window newer than the one it was made on.
+void SurfaceWasLost(VkSurfaceKHR Real) {
+  std::lock_guard Held(SurfaceLock);
+  if (RealSurface* Found = FindReal(Real)) {
+    if (!Found->Retired) {
+      std::printf("[vulkan] the driver lost the surface; the guest is told its swapchain is out of date\n");
+    }
+    Found->Retired = true;
+    if (Found->Generation > LostGeneration) {
+      LostGeneration = Found->Generation;
+    }
+  }
+}
+
+// the real surface a swapchain was made on, or null for one this file did not see made.
+VkSurfaceKHR SurfaceOfSwapchain(uint64_t Swapchain) {
+  std::lock_guard Held(SurfaceLock);
+  const auto It = SwapchainSurface.find(Swapchain);
+  return It == SwapchainSurface.end() ? VK_NULL_HANDLE : It->second;
+}
+
+void NoteSwapchainMade(uint64_t Swapchain, VkSurfaceKHR Real) {
+  std::lock_guard Held(SurfaceLock);
+  if (RealSurface* Found = FindReal(Real)) {
+    ++Found->Swapchains;
+    SwapchainSurface[Swapchain] = Real;
+  }
+}
+
+void NoteSwapchainGone(uint64_t Swapchain) {
+  std::lock_guard Held(SurfaceLock);
+  const auto It = SwapchainSurface.find(Swapchain);
+  if (It == SwapchainSurface.end()) {
+    return;
+  }
+  if (RealSurface* Found = FindReal(It->second); Found && Found->Swapchains) {
+    --Found->Swapchains;
+  }
+  SwapchainSurface.erase(It);
+  DropRetiredSurfaces();
+}
+
+// the guest destroying a surface. when it is the guest's surface, everything made in its name goes
+// with it and the answer is true; any other surface is the driver's to destroy.
+bool DestroyGuestSurface(VkSurfaceKHR Asked) {
+  std::lock_guard Held(SurfaceLock);
+  if (!GuestSurface || Asked != GuestSurface) {
+    return false;
+  }
+  auto Destroy = Host<PFN_vkDestroySurfaceKHR>("vkDestroySurfaceKHR");
+  for (auto& Real : RealSurfaces) {
+    if (Destroy) {
+      Destroy(GuestInstance, Real.Handle, nullptr);
+    }
+  }
+  RealSurfaces.clear();
+  SwapchainSurface.clear();
+  GuestSurface = VK_NULL_HANDLE;
+  return true;
+}
+
+// where a forwarded command names a surface by value, as an index into the syscall's arguments --
+// Argument[N + 1] is the command's argument N -- or 0 for a command that names none that way. the
+// two that name one inside a structure, and the swapchain constructor, are handled where they are
+// forwarded.
+unsigned SurfaceArgument(uint32_t Id) {
+  switch (Id) {
+  case Id_vkGetPhysicalDeviceSurfaceSupportKHR: return 3;
+  case Id_vkGetPhysicalDeviceSurfaceCapabilitiesKHR:
+  case Id_vkGetPhysicalDeviceSurfaceFormatsKHR:
+  case Id_vkGetPhysicalDeviceSurfacePresentModesKHR:
+  case Id_vkGetDeviceGroupSurfacePresentModesKHR:
+  case Id_vkGetPhysicalDevicePresentRectanglesKHR:
+  case Id_vkGetPhysicalDeviceSurfaceCapabilities2EXT: return 2;
+  default: return 0;
+  }
+}
+
+// a present that lost one of the guest's surfaces, reported as out of date: per swapchain where the
+// guest asked for per-swapchain results, and as the call's own result.
+uint64_t ReportLostAsOutOfDate(const VkPresentInfoKHR* Info, uint64_t Result) {
+  if (!Info) {
+    return Result;
+  }
+  const bool Lost = static_cast<VkResult>(static_cast<int32_t>(Result)) == VK_ERROR_SURFACE_LOST_KHR;
+  bool Reported = false;
+  // the lookup takes the surface lock, so it is asked only of a swapchain that was actually lost and
+  // an ordinary present costs a comparison or two.
+  for (uint32_t i = 0; i < Info->swapchainCount; ++i) {
+    const bool ThisLost = Info->pResults ? Info->pResults[i] == VK_ERROR_SURFACE_LOST_KHR : Lost;
+    if (!ThisLost) {
+      continue;
+    }
+    const VkSurfaceKHR Real = SurfaceOfSwapchain(reinterpret_cast<uint64_t>(Info->pSwapchains[i]));
+    if (!Real) {
+      continue;
+    }
+    SurfaceWasLost(Real);
+    if (Info->pResults) {
+      Info->pResults[i] = VK_ERROR_OUT_OF_DATE_KHR;
+    }
+    Reported = true;
+  }
+  return Lost && Reported ? static_cast<uint64_t>(VK_ERROR_OUT_OF_DATE_KHR) : Result;
+}
+
 // the two-call idiom, with our extension appended to whatever the host reported. the guest asks
 // once for a count and once for the array, and both answers have to agree.
 uint64_t AppendExtension(const char* Extra, VkResult (*Query)(uint32_t*, VkExtensionProperties*), uint32_t* Count,
@@ -1262,25 +1495,39 @@ void SetSurfaceSize(uint32_t Width, uint32_t Height) {
 }
 
 void SetAndroidWindow(::ANativeWindow* Window) {
-  if (!Window) {
-    AppWindow.store(nullptr, std::memory_order_release);
-    std::printf("[vulkan] surface released\n");
-    return;
+  if (Window) {
+    const int32_t Width = ::ANativeWindow_getWidth(Window);
+    const int32_t Height = ::ANativeWindow_getHeight(Window);
+    if (Width > 0 && Height > 0) {
+      SurfaceWidth = static_cast<uint32_t>(Width);
+      SurfaceHeight = static_cast<uint32_t>(Height);
+    }
+    WindowOwnsSize = true;
   }
-
-  const int32_t Width = ::ANativeWindow_getWidth(Window);
-  const int32_t Height = ::ANativeWindow_getHeight(Window);
-  if (Width > 0 && Height > 0) {
-    SurfaceWidth = static_cast<uint32_t>(Width);
-    SurfaceHeight = static_cast<uint32_t>(Height);
-  }
-  WindowOwnsSize = true;
 
   // note what is deliberately *not* done here: ANativeWindow_setBuffersGeometry. under android WSI
   // the driver configures this window itself, and pinning a format behind its back is a good way
   // to get a swapchain that disagrees with the buffers it is handed. the headless path still needs
   // it, so it asks for it at the point it is about to write -- see EnsureWindowGeometry.
-  AppWindow.store(Window, std::memory_order_release);
+  //
+  // **the swap is under the surface lock, and the caller depends on it.** the app releases the
+  // window it held only after this returns, so a guest thread making a surface on that window has
+  // finished with the pointer before it can be freed. the count moves only when the window does:
+  // android hands over a surface it already handed over whenever the view is laid out again, and a
+  // surface remade on the window the guest's swapchain already owns would be refused as in use.
+  {
+    std::lock_guard Held(SurfaceLock);
+    if (AppWindow.load(std::memory_order_acquire) != Window) {
+      ++WindowGeneration;
+    }
+    AppWindow.store(Window, std::memory_order_release);
+  }
+  WindowChanged.notify_all();
+
+  if (!Window) {
+    std::printf("[vulkan] surface released\n");
+    return;
+  }
   std::printf("[vulkan] surface attached: %ux%u\n", SurfaceWidth, SurfaceHeight);
 }
 
@@ -1534,17 +1781,21 @@ uint64_t Handle(FEXCore::Core::CpuStateFrame* Frame, FEXCore::HLE::SyscallArgume
       // SharpEmu's AndroidHostWindow asks for VK_EXT_headless_surface because that is what was
       // true when it was written, and it is still exactly what it wants: "a surface, and do not
       // ask me for a window". it happens that we now have one.
-      auto Fn = Host<PFN_vkCreateAndroidSurfaceKHR>("vkCreateAndroidSurfaceKHR");
-      ::ANativeWindow* Window = AppWindow.load(std::memory_order_acquire);
-      if (!Fn || !Window) {
-        std::printf("[vulkan] android surface unavailable (fn=%d window=%d)\n", Fn ? 1 : 0, Window ? 1 : 0);
-        return VK_ERROR_INITIALIZATION_FAILED;
-      }
-      VkAndroidSurfaceCreateInfoKHR Info {};
-      Info.sType = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR;
-      Info.window = Window;
-      const auto Result = Fn(GuestInstance, &Info, nullptr, Out);
+      //
+      // **and the surface made here is the handle the guest keeps for the rest of the run**, whatever
+      // window it later stands for -- see CurrentSurface. a second surface is the guest's own
+      // business and is passed through as the driver made it.
+      std::unique_lock Held(SurfaceLock);
+      RealSurface First {};
+      const VkResult Result = MakeRealSurface(Held, First);
       std::printf("[vulkan] android surface created: %d\n", static_cast<int>(Result));
+      if (Result == VK_SUCCESS) {
+        *Out = First.Handle;
+        if (!GuestSurface) {
+          GuestSurface = First.Handle;
+          RealSurfaces.assign(1, First);
+        }
+      }
       return static_cast<uint64_t>(Result);
     }
     // the invented one carries nothing: everything a surface would describe is a property of the
@@ -1669,10 +1920,12 @@ uint64_t Handle(FEXCore::Core::CpuStateFrame* Frame, FEXCore::HLE::SyscallArgume
   VkSwapchainCreateInfoKHR SwapchainOverride {};
   if (Id == Id_vkCreateSwapchainKHR) {
     const auto* Requested = reinterpret_cast<const VkSwapchainCreateInfoKHR*>(Args->Argument[2]);
-    if (Requested && Requested->preTransform != VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR) {
+    if (Requested && (Requested->preTransform != VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR || UseAndroidWsi())) {
       SwapchainOverride = *Requested;
-      SwapchainOverride.preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
       Args->Argument[2] = reinterpret_cast<uint64_t>(&SwapchainOverride);
+    }
+    if (Requested && Requested->preTransform != VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR) {
+      SwapchainOverride.preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
       if (!TransformOverridden) {
         std::printf("[vulkan] swapchain preTransform 0x%X -> identity: the guest does not pre-rotate\n",
                     Requested->preTransform);
@@ -1680,6 +1933,31 @@ uint64_t Handle(FEXCore::Core::CpuStateFrame* Frame, FEXCore::HLE::SyscallArgume
       TransformOverridden = true;
     }
   }
+
+  // the guest's surface handed down as the one on the current window -- see CurrentSurface. the
+  // surface the guest named is taken before anything is rewritten, so that a retry translates that
+  // again rather than the real one the first attempt substituted.
+  if (UseAndroidWsi() && Id == Id_vkDestroySurfaceKHR &&
+      DestroyGuestSurface(reinterpret_cast<VkSurfaceKHR>(Args->Argument[2]))) {
+    return 0;
+  }
+  VkSurfaceKHR Asked = VK_NULL_HANDLE;
+  const unsigned SurfaceArg = UseAndroidWsi() ? SurfaceArgument(Id) : 0;
+  VkPhysicalDeviceSurfaceInfo2KHR SurfaceInfo {};
+  if (SurfaceArg) {
+    Asked = reinterpret_cast<VkSurfaceKHR>(Args->Argument[SurfaceArg]);
+  } else if (UseAndroidWsi() && (Id == Id_vkGetPhysicalDeviceSurfaceCapabilities2KHR ||
+                                 Id == Id_vkGetPhysicalDeviceSurfaceFormats2KHR)) {
+    if (const auto* Requested = reinterpret_cast<const VkPhysicalDeviceSurfaceInfo2KHR*>(Args->Argument[2])) {
+      SurfaceInfo = *Requested;
+      Asked = SurfaceInfo.surface;
+      Args->Argument[2] = reinterpret_cast<uint64_t>(&SurfaceInfo);
+    }
+  } else if (UseAndroidWsi() && Id == Id_vkCreateSwapchainKHR && Args->Argument[2]) {
+    Asked = SwapchainOverride.surface;
+  }
+  // read before the call, which is what ends the handle's life.
+  const uint64_t DestroyedSwapchain = Id == Id_vkDestroySwapchainKHR ? Args->Argument[2] : 0;
 
   void* Fn = Resolve(Id);
   if (!Fn) {
@@ -1691,31 +1969,75 @@ uint64_t Handle(FEXCore::Core::CpuStateFrame* Frame, FEXCore::HLE::SyscallArgume
     return static_cast<uint64_t>(VK_ERROR_INITIALIZATION_FAILED);
   }
 
-  ArgReader Reader(&Args->Argument[1], Frame->State);
-
-  // the host call, optionally timed. `--trace-vulkan` says which commands are *called*, which is
-  // the wrong question for a stall: 95 ms across 15 draws is not spread over the calls, it is one
-  // of them waiting. so the profile accumulates wall time per command id and the dump sorts by it.
-  //
-  // one clock_gettime either side, only when asked for. off, this is the same two lines it always
-  // was -- the branch is on a bool that never changes after start-up and predicts perfectly.
+  // **one retry, for a surface lost between the guest asking and the driver answering.** the
+  // second attempt waits for a window newer than the one the first was made on, so it is not the
+  // same call twice.
   uint64_t Result;
-  if (ProfileEnabled) [[unlikely]] {
-    const uint64_t Start = NowNanos();
-    const uint64_t StartCpu = ThreadCpuNanos();
-    Result = Commands[Id].Invoke(Fn, Reader);
-    const uint64_t Elapsed = NowNanos() - Start;
-    Profile[Id].CpuNanos.fetch_add(ThreadCpuNanos() - StartCpu, std::memory_order_relaxed);
-    Profile[Id].Nanos.fetch_add(Elapsed, std::memory_order_relaxed);
-    Profile[Id].Calls.fetch_add(1, std::memory_order_relaxed);
-    // no fetch_max before C++26, so a CAS loop. it spins only when a call genuinely sets a new
-    // worst time, which by construction happens a handful of times per interval.
-    uint64_t Worst = Profile[Id].MaxNanos.load(std::memory_order_relaxed);
-    while (Elapsed > Worst &&
-           !Profile[Id].MaxNanos.compare_exchange_weak(Worst, Elapsed, std::memory_order_relaxed)) {
+  VkSurfaceKHR Real = VK_NULL_HANDLE;
+  for (unsigned Attempt = 0;; ++Attempt) {
+    if (Asked) {
+      bool Ours = false;
+      Real = CurrentSurface(Asked, Ours);
+      if (!Ours) {
+        Real = VK_NULL_HANDLE;
+      } else if (SurfaceArg) {
+        Args->Argument[SurfaceArg] = reinterpret_cast<uint64_t>(Real);
+      } else if (Id == Id_vkCreateSwapchainKHR) {
+        SwapchainOverride.surface = Real;
+      } else {
+        SurfaceInfo.surface = Real;
+      }
     }
-  } else {
-    Result = Commands[Id].Invoke(Fn, Reader);
+
+    ArgReader Reader(&Args->Argument[1], Frame->State);
+
+    // the host call, optionally timed. `--trace-vulkan` says which commands are *called*, which is
+    // the wrong question for a stall: 95 ms across 15 draws is not spread over the calls, it is one
+    // of them waiting. so the profile accumulates wall time per command id and the dump sorts by
+    // it.
+    //
+    // one clock_gettime either side, only when asked for. off, this is the same two lines it always
+    // was -- the branch is on a bool that never changes after start-up and predicts perfectly.
+    if (ProfileEnabled) [[unlikely]] {
+      const uint64_t Start = NowNanos();
+      const uint64_t StartCpu = ThreadCpuNanos();
+      Result = Commands[Id].Invoke(Fn, Reader);
+      const uint64_t Elapsed = NowNanos() - Start;
+      Profile[Id].CpuNanos.fetch_add(ThreadCpuNanos() - StartCpu, std::memory_order_relaxed);
+      Profile[Id].Nanos.fetch_add(Elapsed, std::memory_order_relaxed);
+      Profile[Id].Calls.fetch_add(1, std::memory_order_relaxed);
+      // no fetch_max before C++26, so a CAS loop. it spins only when a call genuinely sets a new
+      // worst time, which by construction happens a handful of times per interval.
+      uint64_t Worst = Profile[Id].MaxNanos.load(std::memory_order_relaxed);
+      while (Elapsed > Worst &&
+             !Profile[Id].MaxNanos.compare_exchange_weak(Worst, Elapsed, std::memory_order_relaxed)) {
+      }
+    } else {
+      Result = Commands[Id].Invoke(Fn, Reader);
+    }
+
+    if (!Real || Attempt > 0 || static_cast<VkResult>(static_cast<int32_t>(Result)) != VK_ERROR_SURFACE_LOST_KHR) {
+      break;
+    }
+    SurfaceWasLost(Real);
+  }
+
+  // what the swapchains were made on, so that a lost one is reported as out of date and a replaced
+  // surface is destroyed once nothing is made on it any more.
+  if (UseAndroidWsi()) {
+    const auto Status = static_cast<VkResult>(static_cast<int32_t>(Result));
+    if (Id == Id_vkCreateSwapchainKHR && Status == VK_SUCCESS && Real && Args->Argument[4]) {
+      NoteSwapchainMade(*reinterpret_cast<const uint64_t*>(Args->Argument[4]), Real);
+    } else if (Id == Id_vkDestroySwapchainKHR) {
+      NoteSwapchainGone(DestroyedSwapchain);
+    } else if (Id == Id_vkAcquireNextImageKHR && Status == VK_ERROR_SURFACE_LOST_KHR) {
+      if (const VkSurfaceKHR Lost = SurfaceOfSwapchain(Args->Argument[2])) {
+        SurfaceWasLost(Lost);
+        Result = static_cast<uint64_t>(VK_ERROR_OUT_OF_DATE_KHR);
+      }
+    } else if (Id == Id_vkQueuePresentKHR) {
+      Result = ReportLostAsOutOfDate(reinterpret_cast<const VkPresentInfoKHR*>(Args->Argument[2]), Result);
+    }
   }
 
   // GPU turnaround, gathered from the three commands that know about it. vkQueueSubmit's fence is
