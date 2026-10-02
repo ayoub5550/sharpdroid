@@ -27,6 +27,31 @@ public final class HostLayer {
     public static native void nativeSetSurface(Surface surface);
 
     /**
+     * stops the guest where it stands, with its state kept in memory, until {@link #nativeResume}.
+     *
+     * <p><b>it returns at once</b>, and the guest stops within a millisecond or two on a thread of the
+     * host layer's own, which says in the log when it has. every guest thread stops somewhere it holds
+     * nothing the app's own threads could need -- which is what lets the UI thread go on drawing over
+     * a paused game -- and the audio streams it had playing are paused with it.
+     *
+     * <p>safe to repeat, and safe before the guest has started: the guest's first thread then parks
+     * before it runs anything.
+     */
+    public static native void nativePause();
+
+    /** lets a paused guest go. safe to repeat, and a no-op on a guest that is not paused. */
+    public static native void nativeResume();
+
+    /**
+     * how many frames the guest has presented so far.
+     *
+     * <p>a single relaxed load, so it can be asked once per drawn frame. it is how the app knows a
+     * resumed guest has drawn again: until then the surface may be one android handed over while the
+     * game was paused, with nothing on it yet.
+     */
+    public static native long nativePresentedFrames();
+
+    /**
      * the current state of the gamepad, pushed down whenever any control on it moves.
      *
      * <p>the guest polls for this rather than being handed it, because a host thread calling into the

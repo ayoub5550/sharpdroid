@@ -17,6 +17,7 @@
 #include <csignal>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <dlfcn.h>
 #include <limits.h>
 #include <linux/futex.h>
@@ -261,6 +262,119 @@ void ClearChildTIDAndWake(GuestThread& T) {
   ::_exit(Status & 0xFF);
 }
 
+// --- pausing --------------------------------------------------------------------------------------
+//
+// one word every parked thread waits on, as a futex: non-zero while the guest is paused. a futex
+// rather than a condition variable because one of the two places a thread parks is a signal handler,
+// where the only safe way to wait is the raw syscall.
+
+std::atomic<uint32_t> PauseWord {};
+// moves on every Pause and every Resume, so the thread finishing one pause can tell that it has been
+// overtaken by a resume, or by a resume and another pause.
+std::atomic<uint64_t> PauseGeneration {};
+std::atomic<uint64_t> PausedAtNanos {};
+std::atomic<uint64_t> PausedTotalNanos {};
+// where the threads of the current pause stopped, said when it ends. **the liveness counter for the
+// first of the two places**: a game whose threads are all blocked when it is paused never exercises
+// the poke landing in translated code, and without this a pause that worked only at syscall exits
+// would look exactly like one that works everywhere.
+std::atomic<uint32_t> ParksInCode {};
+std::atomic<uint32_t> ParksAtSyscall {};
+// how many threads the finishing thread found still running guest code on its last walk.
+std::atomic<uint32_t> PauseStragglers {};
+
+uint64_t MonotonicNanos() {
+  timespec Now {};
+  ::clock_gettime(CLOCK_MONOTONIC, &Now);
+  return static_cast<uint64_t>(Now.tv_sec) * 1000000000ull + static_cast<uint64_t>(Now.tv_nsec);
+}
+
+// waits out the pause on this thread. safe in a signal handler: nothing here allocates, locks or
+// prints.
+void Park(GuestThread& T, bool InCode) {
+  (InCode ? ParksInCode : ParksAtSyscall).fetch_add(1, std::memory_order_relaxed);
+  T.Parked.store(true, std::memory_order_release);
+  while (PauseWord.load(std::memory_order_acquire) != 0) {
+    ::syscall(SYS_futex, reinterpret_cast<uint32_t*>(&PauseWord), FUTEX_WAIT_PRIVATE, 1, nullptr, nullptr, 0);
+  }
+  T.Parked.store(false, std::memory_order_release);
+}
+
+// the other place, which is a syscall exit or the top of a thread's dispatch loop -- both of them
+// outside translated code with nothing of the host layer's held.
+//
+// the check is a plain load, since every syscall exit makes it: a pause it misses finds the thread
+// running on its next walk and pokes it.
+void ParkIfPaused(GuestThread& T) {
+  if (PauseWord.load(std::memory_order_relaxed) != 0) [[unlikely]] {
+    Park(T, false);
+  }
+}
+
+// the host thread that finishes a pause: it pokes every thread that is still running guest code until
+// none is, then says where everything ended up. it holds the registry lock only for one walk at a
+// time, and that lock is a leaf, so poking under it is what SignalGuestThread already does.
+void* FinishPause(void* Arg) {
+  const auto Generation = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(Arg));
+  const uint64_t Started = MonotonicNanos();
+  // five seconds is generous against a pause that takes a millisecond or two. a thread still running
+  // past it is worth naming rather than poking forever.
+  constexpr uint64_t GiveUpNanos = 5'000'000'000ull;
+  for (unsigned Round = 1;; ++Round) {
+    if (PauseGeneration.load(std::memory_order_acquire) != Generation) {
+      return nullptr;
+    }
+    unsigned Live = 0, Parked = 0, Blocked = 0, Running = 0;
+    char Stragglers[160] = "";
+    size_t Used = 0;
+    {
+      std::lock_guard Lock {RegistryLock};
+      for (auto* T : Registry) {
+        // a thread registered before its host thread has published a tid. it parks at the top of
+        // its own dispatch loop, before it runs a single guest instruction.
+        if (!T->TID) {
+          continue;
+        }
+        ++Live;
+        if (T->Parked.load(std::memory_order_acquire)) {
+          ++Parked;
+          continue;
+        }
+        if (T->InSyscall.load(std::memory_order_relaxed)) {
+          ++Blocked;
+          continue;
+        }
+        ++Running;
+        if (Used < sizeof(Stragglers) - 16) {
+          Used += std::snprintf(Stragglers + Used, sizeof(Stragglers) - Used, " %d", T->TID);
+        }
+        T->PauseKicked.store(true, std::memory_order_seq_cst);
+        ::syscall(SYS_tgkill, ::getpid(), T->TID, HostInterruptSignal);
+      }
+    }
+    PauseStragglers.store(Running, std::memory_order_relaxed);
+    const uint64_t Elapsed = MonotonicNanos() - Started;
+    if (!Running || Elapsed > GiveUpNanos) {
+      if (PauseGeneration.load(std::memory_order_acquire) != Generation) {
+        return nullptr;
+      }
+      if (Running) {
+        std::printf("[host-layer] paused, but %u of %u guest threads are still running after %.1f s:%s\n", Running,
+                    Live, static_cast<double>(Elapsed) / 1e9, Stragglers);
+      } else {
+        std::printf("[host-layer] paused: %u guest threads, %u parked and %u inside a syscall, after %.2f ms and %u "
+                    "round(s)\n",
+                    Live, Parked, Blocked, static_cast<double>(Elapsed) / 1e6, Round);
+      }
+      std::fflush(stdout);
+      return nullptr;
+    }
+    // quickly at first, since nearly every thread is caught by the first poke, then less often for a
+    // thread that keeps being found in host code.
+    ::usleep(Round < 10 ? 1000 : 10000);
+  }
+}
+
 // --- delivering an asynchronous signal -----------------------------------------------------------
 //
 // every caller below has already established that CPUState describes the guest: either it was
@@ -318,6 +432,26 @@ void GuestInterruptHandler(int Sig, siginfo_t*, void* UContext) {
     // signal could mean here.
     return;
   }
+
+  // a pause is asked about first. it wants the thread stopped, and a guest signal waiting as well
+  // is still waiting when the pause is over -- which is where the code below picks it up.
+  if (PauseWord.load(std::memory_order_acquire) != 0) {
+    // a poke that lands here rather than inside a blocking call has interrupted nothing, so there is
+    // no EINTR on its way for the syscall exit to account for.
+    if (!T->InSyscall.load(std::memory_order_seq_cst)) {
+      T->PauseKicked.store(false, std::memory_order_relaxed);
+    }
+    // translated code and FEX's dispatcher are the places with nothing of ours held -- the same
+    // test the fault handler makes before treating a fault as the guest's, plus the refcount FEXCore
+    // raises around its own critical sections. anywhere else, the thread is left to reach a syscall
+    // exit or to be found in translated code by the next poke.
+    const uint64_t PC = static_cast<ucontext_t*>(UContext)->uc_mcontext.pc;
+    if (T->Thread->CurrentFrame->State.DeferredSignalRefCount.Load() == 0 &&
+        ((PC >= Config->DispatcherBegin && PC < Config->DispatcherEnd) || CTX->IsAddressInCodeBuffer(T->Thread, PC))) {
+      Park(*T, true);
+    }
+  }
+
   if (!Signals->HasDeliverablePending(*T)) {
     // already taken at a syscall boundary, or blocked and waiting for the guest's own mask to
     // change. neither is a reason to disturb anything.
@@ -874,6 +1008,89 @@ void DeliverPendingNow(GuestThread& T) {
   EnterGuestHandler(T, Signal);
 }
 
+// --- pausing the guest ----------------------------------------------------------------------------
+
+void Pause() {
+  if (PauseWord.exchange(1, std::memory_order_acq_rel) != 0) {
+    return;
+  }
+  PausedAtNanos.store(MonotonicNanos(), std::memory_order_relaxed);
+  ParksInCode.store(0, std::memory_order_relaxed);
+  ParksAtSyscall.store(0, std::memory_order_relaxed);
+  PauseStragglers.store(0, std::memory_order_relaxed);
+  const uint64_t Generation = PauseGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
+  // the poking happens on a thread of its own so that the caller -- the app's UI thread, leaving the
+  // foreground -- is not held for it. detached: it ends by itself, and a resume makes it end early.
+  pthread_t Finisher {};
+  if (::pthread_create(&Finisher, nullptr, FinishPause, reinterpret_cast<void*>(static_cast<uintptr_t>(Generation))) == 0) {
+    ::pthread_detach(Finisher);
+  } else {
+    std::printf("[host-layer] pause: could not start the thread that stops the guest\n");
+  }
+}
+
+void Resume() {
+  if (PauseWord.load(std::memory_order_acquire) == 0) {
+    return;
+  }
+  // **the clock first, then the threads.** the total is what the guest's monotonic clock leaves
+  // out, and moving it while every guest thread is still parked is what makes the step invisible:
+  // no thread reads the clock either side of it.
+  const uint64_t Held = MonotonicNanos() - PausedAtNanos.load(std::memory_order_relaxed);
+  PausedTotalNanos.fetch_add(Held, std::memory_order_release);
+  if (PauseWord.exchange(0, std::memory_order_acq_rel) == 0) {
+    return;
+  }
+  PauseGeneration.fetch_add(1, std::memory_order_acq_rel);
+  ::syscall(SYS_futex, reinterpret_cast<uint32_t*>(&PauseWord), FUTEX_WAKE_PRIVATE, INT_MAX, nullptr, nullptr, 0);
+  // counted while parked, so a thread that never woke from the call it was blocked in is in neither.
+  std::printf("[host-layer] resumed after %.1f s paused. %u thread(s) had stopped in translated code and %u at "
+              "a syscall exit\n",
+              static_cast<double>(Held) / 1e9, ParksInCode.load(std::memory_order_relaxed),
+              ParksAtSyscall.load(std::memory_order_relaxed));
+  std::fflush(stdout);
+}
+
+bool Paused() {
+  return PauseWord.load(std::memory_order_acquire) != 0;
+}
+
+// a plain load, because the clock syscalls ask on every call. it moves only while every thread that
+// could read it is parked, and leaving the park is a futex wake, which orders it.
+uint64_t PausedNanos() {
+  return PausedTotalNanos.load(std::memory_order_relaxed);
+}
+
+PauseCounts LastPauseCounts() {
+  return {ParksInCode.load(std::memory_order_relaxed), ParksAtSyscall.load(std::memory_order_relaxed),
+          PauseStragglers.load(std::memory_order_relaxed)};
+}
+
+// **every guest syscall pays for these two, so they are plain loads and stores.** nothing about the
+// pause needs them ordered: the thread finishing a pause walks the threads again every few
+// milliseconds, so a stale reading either way costs one poke the exit below accounts for, or one
+// walk's delay. ordered versions of the same three accesses cost 15 ns on every syscall, measured.
+void EnterSyscall(GuestThread& T) {
+  T.InSyscall.store(true, std::memory_order_relaxed);
+}
+
+bool LeaveSyscall(GuestThread& T, uint64_t Result, bool Repeatable) {
+  // read before it is cleared, so an ordinary syscall exit never pays for an atomic exchange. the
+  // poke that set it is a signal, and taking one is a barrier of its own.
+  const bool Kicked = T.PauseKicked.load(std::memory_order_relaxed) &&
+                      T.PauseKicked.exchange(false, std::memory_order_relaxed);
+  ParkIfPaused(T);
+  // **an EINTR the guest's own signal does not explain is the pause's.** the only host signal a
+  // guest thread is sent that can interrupt a call is the poke, and a poke raising a guest signal
+  // leaves that signal pending -- so with nothing pending, this EINTR was caused by a pause that
+  // found the thread running and then reached it just inside a blocking call.
+  if (Repeatable && Kicked && static_cast<int64_t>(Result) == -EINTR && !Signals->HasDeliverablePending(T)) {
+    return true;
+  }
+  T.InSyscall.store(false, std::memory_order_relaxed);
+  return false;
+}
+
 // --- the run loop -----------------------------------------------------------------------------
 //
 // delivering a signal means abandoning the host call frames of whatever JIT'd block was running
@@ -904,8 +1121,15 @@ void Run(GuestThread& T) {
         return;
       }
       T.Thread->CurrentFrame->State.callret_sp = T.CallRetDefault;
+      // rt_sigreturn and a signal delivered from inside a syscall both leave through here rather
+      // than through the syscall's exit, so this is where their bracket closes. left open, a pause
+      // would take this thread for one blocked in a syscall and never stop it.
+      T.InSyscall.store(false, std::memory_order_release);
     }
     T.Reason = Escape::Returned;
+    // a thread born during a pause, or re-dispatched into one by a signal, parks before it runs a
+    // single guest instruction.
+    ParkIfPaused(T);
     CTX->ExecuteThread(T.Thread);
 
     // ExecuteThread can also come back carrying a generated fault rather than because the guest

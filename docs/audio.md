@@ -133,6 +133,14 @@ two reports are not periodic:
 
 a write that fails is never silent either. a stream that has gone away answers every submission with a negative result, and without a complaint on that path the only symptom is a log that goes quiet. the first eight are printed with the result converted to text.
 
+## pausing with the guest
+
+**when the guest is paused, every stream it had playing is paused with it** — see [`host-layer.md`](host-layer.md) for the pause itself. the device then goes quiet at once rather than playing its buffer out into an underrun, and the audio hardware can go to standby for as long as the game is put away. on the way back each one is started again. a stream the guest had paused or stopped itself is left alone both times, and the host's hold is counted separately from the guest's, so the stream table's percentage is a share of the time the stream was meant to be playing.
+
+**this happens on a thread of the thunk's own**, applying whichever state was asked for last, for two reasons. AAudio's answer can take seconds: a stream that has sat paused for a while can have been taken back by the audio server, and the request to start it again then waits on the server before reporting the stream disconnected — which needs nothing from here, since the guest's next write is refused and the emulator reopens the stream, exactly as it does for a headset unplugged mid-game. and one thread applying the latest state means a pause and a resume asked for in quick succession arrive in that order, rather than in whichever order two threads reached the stream lock; the wrong order is a game running over streams left paused.
+
+**the watchdog says nothing while the guest is paused**, since a guest submitting nothing is then the point, and it counts the quiet from the moment of resuming rather than from the last write before the pause.
+
 ## the watchdog
 
 **a host thread that notices the guest has stopped submitting.** it runs whenever audio does; `--audio-watchdog` only makes it chatty and adds one thread dump.

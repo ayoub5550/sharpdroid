@@ -5,7 +5,9 @@
 // comparable to the ones every earlier milestone recorded. the one thing that is *not* an
 // argument is the window, because it is a live object rather than a string.
 
+#include "audio_thunk.h"
 #include "boot_progress.h"
+#include "guest_threads.h"
 #include "host_layer.h"
 #include "log_ring.h"
 #include "pad_bridge.h"
@@ -142,6 +144,28 @@ JNIEXPORT void JNICALL Java_com_mircowuffwuff_sharpdroid_HostLayer_nativeSetSurf
     ::ANativeWindow_release(Window);
   }
   Window = Next;
+}
+
+// the guest stopped where it stands, and let go again. what stops where is guest_threads.h's to say,
+// and what the audio streams do is audio_thunk.h's.
+//
+// both return at once and both are safe to repeat: the threads are stopped and the streams paused on
+// threads of the host layer's own, so the app's UI thread is never held by either. a pause asked for
+// before the guest has started is kept, and the guest's first thread parks before it runs anything.
+JNIEXPORT void JNICALL Java_com_mircowuffwuff_sharpdroid_HostLayer_nativePause(JNIEnv*, jclass) {
+  HostLayer::AudioThunk::SetPaused(true);
+  HostLayer::Threads::Pause();
+}
+
+JNIEXPORT void JNICALL Java_com_mircowuffwuff_sharpdroid_HostLayer_nativeResume(JNIEnv*, jclass) {
+  HostLayer::Threads::Resume();
+  HostLayer::AudioThunk::SetPaused(false);
+}
+
+// how many frames the guest has presented. a relaxed load, so it can be asked once per drawn frame --
+// which is how the app tells that a resumed guest has drawn again.
+JNIEXPORT jlong JNICALL Java_com_mircowuffwuff_sharpdroid_HostLayer_nativePresentedFrames(JNIEnv*, jclass) {
+  return static_cast<jlong>(HostLayer::VulkanThunk::PresentedFrameCount());
 }
 
 // the app's pad state, pushed from wherever it reads a KeyEvent or a MotionEvent. scalars rather than

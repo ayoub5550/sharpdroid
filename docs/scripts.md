@@ -45,7 +45,7 @@ py scripts/run.py --game existing      launch what is already on the device
 | --- | --- |
 | **`scripts/run.py`** | **build it, put it on the device, start it, show the log.** the one command you want most of the time |
 | `scripts/build.py` | build everything in dependency order. `--list` prints the steps and what each does, `--install` installs the APK, `--clean` wipes what the native steps write, `--force` fetches again as well, `--only <step>` runs one |
-| `scripts/regression.py` | stage the shell binary and run the host layer's 15 regression modes on the device. **exits non-zero if any fail**, so it can gate anything |
+| `scripts/regression.py` | stage the shell binary and run the host layer's 17 regression modes on the device. **exits non-zero if any fail**, so it can gate anything |
 
 ### the screen
 

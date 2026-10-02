@@ -44,6 +44,8 @@ _GUESTS = [
      _FREESTANDING, None),
     ("asyncsig", "issues clone and tgkill itself, so one guest thread interrupts another",
      _FREESTANDING, None),
+    ("pause", "is paused from outside, and checks from inside that its clock and its spinning "
+     "thread both stopped", _FREESTANDING, None),
     ("vulkan", "623 entry points resolved by the guest's own ld.so before it starts",
      _DYNAMIC, "vulkan"),
     ("vkrender", "the one that makes the GPU run something", _DYNAMIC, "vulkan"),

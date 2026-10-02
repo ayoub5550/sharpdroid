@@ -47,11 +47,13 @@
 #include <FEXCore/HLE/SyscallHandler.h>
 #include <FEXCore/Utils/TypeDefines.h>
 
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <iterator>
 #include <optional>
 #include <string_view>
+#include <thread>
 #include <vector>
 #include <sys/auxv.h>
 #include <sys/mman.h>
@@ -64,6 +66,35 @@
 #endif
 
 namespace {
+
+// --- the pause, tested from a shell ------------------------------------------------------------
+//
+// `--pause-selftest` pauses the guest for half a second, 300 ms after it starts, and fails the run
+// unless at least one thread was stopped inside translated code and none was still running when the
+// pause was settled. that is the half the guest cannot see; guests/pause.c checks the other half --
+// that its monotonic clock left the pause out and its spinning thread stopped -- from inside.
+//
+// the app pauses the same way, from its own buttons rather than a timer, so this is the pause's whole
+// mechanism under test with nothing of the app's in front of it.
+bool PauseSelfTest {};
+
+void StartPauseSelfTest() {
+  std::thread([] {
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    std::printf("[host-layer] pause self-test: pausing the guest for 500 ms\n");
+    std::fflush(stdout);
+    HostLayer::Threads::Pause();
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    const auto Counts = HostLayer::Threads::LastPauseCounts();
+    HostLayer::Threads::Resume();
+    if (Counts.InCode == 0 || Counts.StillRunning != 0) {
+      std::printf("[host-layer] pause self-test FAILED: %u thread(s) stopped in translated code, %u still running\n",
+                  Counts.InCode, Counts.StillRunning);
+      std::fflush(stdout);
+      ::_exit(5);
+    }
+  }).detach();
+}
 
 // --- FEXCore configuration by name -------------------------------------------------------------
 
@@ -490,6 +521,9 @@ int RunELF(FEXCore::Context::Context* CTX, const char* Path, const char* LibDir,
   }
 
   std::printf("[host-layer] --- guest starts ---\n");
+  if (PauseSelfTest) {
+    StartPauseSelfTest();
+  }
   HostLayer::Threads::Run(*T);
   std::printf("[host-layer] --- guest stops ---\n");
 
@@ -724,6 +758,8 @@ int HostLayer::RunMain(int argc, char** argv) {
       // one fabricated rumble when the guest first polls, so the delivery path can be shown to work
       // on a title that never asks for one. it announces itself in the log.
       HostLayer::PadBridge::SetSelfTest(true);
+    } else if (std::strcmp(argv[ArgIndex], "--pause-selftest") == 0) {
+      PauseSelfTest = true;
     } else if (std::strcmp(argv[ArgIndex], "--libs") == 0 && ArgIndex + 1 < argc) {
       // one flag, two jobs: where PT_INTERP is resolved from, and what the guest is handed as
       // LD_LIBRARY_PATH. they are the same directory in every case that matters, and splitting
@@ -771,7 +807,7 @@ int HostLayer::RunMain(int argc, char** argv) {
                          "[--vulkan-size WxH] [--vulkan-wsi auto|headless|android] [--trace-vulkan] "
                          "[--vulkan-profile] [--vulkan-dump <prefix>] "
                          "[--audio] [--audio-lib <so>] [--trace-audio] [--audio-watchdog] "
-                         "[--pad] [--trace-pad] [--pad-selftest] [--libs <dir>] "
+                         "[--pad] [--trace-pad] [--pad-selftest] [--pause-selftest] [--libs <dir>] "
                          "[--saf-mount <prefix>] "
                          "[--fex Name=Value]... [--host-features probe|minimal] "
                          "[--tmp <dir>] [--env NAME=VALUE]... <x86-64-elf> [guest args...]\n");

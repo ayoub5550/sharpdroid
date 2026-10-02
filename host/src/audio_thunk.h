@@ -114,6 +114,15 @@ uint64_t Handle(FEXCore::Core::CpuStateFrame* Frame, FEXCore::HLE::SyscallArgume
 // something else entirely.
 void ReportStreams();
 
+// the guest being paused and resumed. every stream it had playing is paused with it, so the device
+// goes quiet at once instead of playing its buffer out into an underrun, and is started again on the
+// way back; a stream the guest paused or stopped itself is left alone both times. the watchdog says
+// nothing while the guest is paused, since a guest that submits nothing is then the point.
+//
+// it returns at once: the streams are paused and started on a thread of the thunk's own, because the
+// audio server can take seconds to answer for a stream that has been paused a while.
+void SetPaused(bool Paused);
+
 // counters, for the run summary.
 uint64_t CallCount();
 uint64_t UnresolvedCount();

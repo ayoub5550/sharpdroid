@@ -204,6 +204,41 @@ blocked signals stay pending, because a blocked signal is not lost — it is wai
 
 `--trace-signals` traces raise, defer, deliver and sigreturn — a handful of lines per run rather than a firehose, and separate from `--trace` for that reason. it answers one question a syscall log cannot: what the guest's handler did to the frame. CoreCLR suspends threads for its GC by **rewriting the RIP in the ucontext it was handed**, so a delivery whose sigreturn returns at a different RIP than it left at is the runtime redirecting itself.
 
+## pausing
+
+`Threads::Pause` and `Threads::Resume`, which the app reaches through `nativePause` and `nativeResume`. **a paused guest is every guest thread stopped where it holds no host lock, with everything it owns kept in memory**, until it is let go and carries on from exactly where it was.
+
+**where a thread may stop is the whole design**, and it is the same two places an asynchronous signal is delivered from, for the same reason: inside translated code, where the frames below belong to FEX's dispatcher and nothing of the host layer's is held, and on the way out of a syscall, where `CPUState` describes the guest exactly and every host lock has been let go. a thread stopped anywhere else could be holding bionic's allocator, a driver's queue lock or FEXCore's code cache, and the app's own threads — which go on drawing over a paused game — would then wait on it.
+
+**stopping inside translated code needs no redirection at all**, which is why it is sound where delivering a signal from the same place is not. the poke's handler simply does not return until the pause is over, and the thread then carries on from the instruction it was interrupted at; nothing is rebuilt, and no instruction boundary has to be found. the handler parks on a futex word, the only wait that is safe in a signal handler.
+
+| a thread that is | when the pause starts |
+| --- | --- |
+| running translated code | poked with `SIGRTMAX`, and parks in the handler |
+| in FEXCore's compiler, bionic or a syscall implementation | poked, and left alone by the handler. it is poked again every millisecond, then every ten, until it is caught in translated code or reaches a syscall exit |
+| blocked in a syscall | **not poked**. it is already stopped, and parks on the way out if anything wakes it |
+| not yet started | parks at the top of its dispatch loop, before its first guest instruction |
+
+the poking is done by a host thread of its own, so the caller is never held, and it says once where every thread ended up: `paused: 46 guest threads, 1 parked and 45 inside a syscall, after 0.00 ms`. the resume says how many stopped in translated code and how many at a syscall exit, which is **the liveness counter for the first of the two places** — a game whose threads are all blocked at the moment it is paused never exercises the poke landing in a block, and a pause that worked only at syscall exits would otherwise look exactly like one that works everywhere. a thread still running after five seconds is named rather than poked forever.
+
+**every guest syscall is bracketed** so the pause can tell blocked from running. the bracket opens on entry and closes on the way out, and `rt_sigreturn` and a signal delivered from inside a syscall — both of which leave through the escape hatch rather than through the exit — close it where they land. **the one race is a thread found running that enters a blocking call before its poke arrives**: the poke then brings that call back with `EINTR` the guest never asked for. the exit tells that `EINTR` from one a guest signal caused — a guest signal leaves itself pending — and issues the same syscall again once the pause is over, which is what the guest would have seen had it never been interrupted. **only a real syscall is ever issued twice**: a thunk call is a library call whose library retries its own `EINTR`, whose result can equal `-EINTR` by coincidence, and whose arguments the vulkan thunk rewrites on the way through.
+
+**every syscall pays for the bracket, so it is plain loads and stores.** nothing about the pause needs them ordered — the thread finishing a pause walks the threads again every few milliseconds, so a stale reading either way costs one poke the exit accounts for, or one walk's delay — and ordered versions cost 15 ns on every syscall. as it is, the bracket costs nothing measurable on a thunk call, and the clock below adds about 3 ns to a `clock_gettime`.
+
+### the guest's clock, with the pauses left out
+
+**a paused guest sees the pause the way a linux program sees the machine being suspended**: its monotonic clocks stop, and `CLOCK_REALTIME` and `CLOCK_BOOTTIME` carry on. that is the kernel's own answer to the same question, and it is load-bearing rather than tidy — the emulator's own stall watchdog ends a run that makes no progress for twenty seconds by `CLOCK_MONOTONIC`, and on linux every clock it hands a game, `sceKernelReadTsc` and process time included, reads that one too. without this, a game paused for longer than twenty seconds is ended by that watchdog the moment it is resumed.
+
+so the guest's `CLOCK_MONOTONIC`, `CLOCK_MONOTONIC_RAW` and `CLOCK_MONOTONIC_COARSE` read the host's less the total time paused, and **an absolute deadline on any of them is moved later by the same amount**: `clock_nanosleep` with `TIMER_ABSTIME`, and the futex operations whose timeout is an absolute monotonic time — `FUTEX_WAIT_BITSET`, `FUTEX_WAIT_REQUEUE_PI` and `FUTEX_LOCK_PI2` without `FUTEX_CLOCK_REALTIME`, which is the shape CoreCLR's own timed waits take. relative timeouts need nothing. the total moves at `Resume`, before any thread is let go, so no thread reads the clock on both sides of the step.
+
+**the one clock this cannot reach is the cycle counter**: a guest's own `rdtsc` is translated to a read of the host's counter inside a block. the emulator does not use it on linux, and a game reading it directly sees the pause.
+
+### audio, and the self-test
+
+the audio streams the guest had playing are paused with it — see [`audio.md`](audio.md).
+
+**`--pause-selftest` pauses the guest for half a second, 300 ms after it starts**, and fails the run unless a thread was stopped inside translated code and none was still running when the pause settled. `guests/pause.c` checks the rest from inside: that its monotonic clock left the half second out, against `CLOCK_BOOTTIME`, and that a thread spinning in translated code with no syscalls at all stopped for it. the regression set runs it both ways — with the self-test, where it must pass, and without, where it must fail, which is what says the guest can tell a pause from none.
+
 ## VMA and SMC tracking
 
 `host/src/vma_tracker.{h,cpp}`. FEXCore asks the host layer two questions about guest memory and expects to be told when the answers change:

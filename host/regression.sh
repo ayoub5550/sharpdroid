@@ -67,6 +67,14 @@ run smc ./smc
 # interrupt-fault-page machinery from rotting while it waits to be trusted on the real workload.
 run asyncsig-safepoint --asyncsig safepoint ./asyncsig
 
+# the pause. the host layer stops the guest for half a second and fails the run unless a thread was
+# caught inside translated code; the guest fails it unless its monotonic clock left the half second
+# out and its spinning thread stopped for it. run without the self-test, the guest sees no pause and
+# must fail -- which is what says the first mode is the pause working rather than a guest that
+# passes whatever happens.
+run pause --pause-selftest ./pause
+run_fails pause-off "the guest passed with nothing pausing it, so it cannot tell a pause from none" ./pause
+
 # the vulkan thunk. these need a working GPU and are the only guests here that depend on
 # anything outside the host layer, so a failure is worth reading before assuming a regression:
 # `vulkan` checks the marshalling and the stub table, `vkrender` checks that the driver actually

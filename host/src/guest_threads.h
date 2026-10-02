@@ -131,6 +131,21 @@ struct GuestThread {
   // frame has already been overwritten by guest execution.
   bool StartPublished {};
   bool StartReleased {};
+
+  // --- pausing -------------------------------------------------------------------------------
+  //
+  // read by the thread that pauses, written by this one, so all three are atomic.
+
+  ///< inside a guest syscall, from the moment the handler is entered to the moment it returns. a
+  ///< thread in one is either blocked, and so already stopped, or on its way to the exit where it
+  ///< parks -- so a pause leaves it alone rather than interrupting it.
+  std::atomic<bool> InSyscall {};
+  ///< stopped by a pause, in one of the two places a thread is allowed to stop.
+  std::atomic<bool> Parked {};
+  ///< poked by the pause rather than by a guest signal. a poke that lands in a blocking host call
+  ///< brings it back with EINTR, and this is what says that EINTR is the host layer's and not
+  ///< something the guest should see.
+  std::atomic<bool> PauseKicked {};
 };
 
 namespace Threads {
@@ -318,6 +333,63 @@ void SetAsyncSite(AsyncSite Site);
 bool AsyncNeedsInterruptCheck();
 
 void PrintFaultReport(const GuestThread& T);
+
+// --- pausing the guest ---------------------------------------------------------------------------
+//
+// **every guest thread stops where it holds no host lock, and nowhere else.** that is the same two
+// places an asynchronous signal is delivered from, for the same reason: inside translated code, where
+// the frames below belong to FEX's dispatcher and nothing of ours is held, and on the way out of a
+// syscall, where CPUState describes the guest exactly and the host layer has let go of everything.
+// a thread stopped anywhere else could be holding bionic's allocator, a driver's queue lock or
+// FEXCore's code cache, and the app's own threads -- which keep running -- would then wait on it.
+//
+// stopping in translated code needs no redirection at all. the poke's handler simply does not
+// return until the pause is over, and then the thread carries on from the instruction it was
+// interrupted at. that is why this is sound where delivering a signal from the same place is not.
+
+/**
+ * @brief Stop the guest, without waiting for it to have stopped.
+ *
+ * a thread running guest code is poked and parks in the handler. one interrupted somewhere else --
+ * FEXCore's compiler, bionic, the middle of a syscall implementation -- is poked again until it is
+ * caught somewhere it may stop. one inside a syscall is left where it is: blocked, it is already
+ * stopped, and if it wakes it parks on the way out. a host thread of the host layer's does the
+ * poking and says once how long it took and where every thread ended up.
+ */
+void Pause();
+
+///< let every parked thread go. a thread that was inside a syscall when it was poked makes the call
+///< again, so the guest never sees the interruption.
+void Resume();
+
+bool Paused();
+
+///< how long the guest has spent paused, in total. the guest's monotonic clocks leave it out, the way
+///< a linux program's leave out a suspend -- see the clock syscalls in linux_syscalls.cpp. it moves
+///< only at Resume, while every guest thread is still parked.
+uint64_t PausedNanos();
+
+///< where the threads of the current or last pause stopped, and how many were still running when the
+///< thread finishing it last looked. what `--pause-selftest` asserts on.
+struct PauseCounts {
+  uint32_t InCode;
+  uint32_t AtSyscall;
+  uint32_t StillRunning;
+};
+PauseCounts LastPauseCounts();
+
+///< the entry half of the bracket a guest syscall is made inside. see GuestThread::InSyscall.
+void EnterSyscall(GuestThread& T);
+
+/**
+ * @brief The exit half: park if the guest is paused, and say whether the call has to be made again.
+ *
+ * @return true when @param Result is an EINTR the pause caused rather than one the guest's own
+ * signal explains, and @param Repeatable says the call may be made twice. the caller then issues the
+ * same syscall again, which is what the guest would have seen had it never been interrupted. the
+ * bracket stays open across that second call.
+ */
+bool LeaveSyscall(GuestThread& T, uint64_t Result, bool Repeatable);
 
 } // namespace Threads
 

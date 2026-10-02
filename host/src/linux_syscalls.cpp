@@ -15,6 +15,7 @@
 #include <string>
 #include <unordered_map>
 #include <fcntl.h>
+#include <linux/futex.h>
 #include <poll.h>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
@@ -194,6 +195,47 @@ enum GuestSyscall : uint64_t {
 
 uint64_t FromHost(long Result) {
   return Result == -1 ? static_cast<uint64_t>(-errno) : static_cast<uint64_t>(Result);
+}
+
+// --- the guest's monotonic clock, with the pauses left out ---------------------------------------
+//
+// **a paused guest sees the pause the way a linux program sees the machine being suspended**: its
+// monotonic clocks stop, and CLOCK_REALTIME and CLOCK_BOOTTIME carry on. that is the kernel's own
+// answer to the same question, and it is what lets a guest come back from minutes away without
+// concluding it has hung -- the emulator's own stall watchdog ends a run that makes no progress for
+// twenty seconds by CLOCK_MONOTONIC, and every clock it hands a game reads that one too.
+//
+// so the time the guest reads is the host's less the total time paused, and a deadline it gives the
+// kernel on that clock is the host's plus it. the total moves only while every guest thread is
+// parked -- see Threads::Resume -- so no thread sees it change under a reading.
+//
+// the one clock this cannot reach is the cycle counter. a guest's own `rdtsc` is translated to a
+// read of the host's counter inside a block, and the emulator does not use it on linux.
+
+bool IsMonotonic(clockid_t Clock) {
+  return Clock == CLOCK_MONOTONIC || Clock == CLOCK_MONOTONIC_RAW || Clock == CLOCK_MONOTONIC_COARSE;
+}
+
+void ShiftTimespec(struct timespec& Time, int64_t Nanos) {
+  int64_t Total = static_cast<int64_t>(Time.tv_nsec) + Nanos % 1000000000;
+  Time.tv_sec += Nanos / 1000000000 + Total / 1000000000;
+  Total %= 1000000000;
+  if (Total < 0) {
+    Total += 1000000000;
+    --Time.tv_sec;
+  }
+  Time.tv_nsec = Total;
+}
+
+// the futex operations whose timeout is an absolute time, on CLOCK_MONOTONIC unless the guest says
+// CLOCK_REALTIME. FUTEX_WAIT's own is relative, FUTEX_LOCK_PI's is always the wall clock, and in the
+// requeue and wake-op operations that slot is not a time at all.
+bool FutexHasMonotonicDeadline(uint64_t Operation) {
+  if (Operation & FUTEX_CLOCK_REALTIME) {
+    return false;
+  }
+  const uint64_t Command = Operation & FUTEX_CMD_MASK;
+  return Command == FUTEX_WAIT_BITSET || Command == FUTEX_WAIT_REQUEUE_PI || Command == 13 /* FUTEX_LOCK_PI2 */;
 }
 
 // x86-64's struct stat. it is not the arm64 one -- the field order diverges after st_ino and
@@ -557,7 +599,26 @@ void LinuxSyscallHandler::InvalidateGuestCodeRange(FEXCore::Core::InternalThread
 }
 
 uint64_t LinuxSyscallHandler::HandleSyscall(FEXCore::Core::CpuStateFrame* Frame, FEXCore::HLE::SyscallArguments* Args) {
-  const uint64_t Result = Dispatch(Frame, Args);
+  auto* Self = static_cast<GuestThread*>(Frame->Thread->FrontendPtr);
+  if (!Self) {
+    return Dispatch(Frame, Args);
+  }
+
+  // the syscall is bracketed so that a pause can tell a thread that is blocked, and so already
+  // stopped, from one running guest code -- see Threads::Pause. the exit half is also one of the two
+  // places a paused thread parks, and the reason a call the pause interrupted is made again.
+  //
+  // only a real syscall is ever made twice. a thunk call is a library call: the library retries its
+  // own EINTR, its result is a value of the library's that can equal -EINTR by coincidence, and the
+  // vulkan thunk rewrites its own arguments on the way through.
+  const uint64_t Number = Args->Argument[0];
+  const bool Repeatable = !VulkanThunk::IsThunkCall(Number) && !AudioThunk::IsThunkCall(Number) &&
+                          !PadBridge::IsThunkCall(Number);
+  Threads::EnterSyscall(*Self);
+  uint64_t Result = Dispatch(Frame, Args);
+  while (Threads::LeaveSyscall(*Self, Result, Repeatable)) {
+    Result = Dispatch(Frame, Args);
+  }
 
   // a syscall boundary is the host layer's one unconditionally safe delivery point: CPUState
   // describes the guest exactly, no host lock is held, and an interrupted host call is still close
@@ -567,9 +628,7 @@ uint64_t LinuxSyscallHandler::HandleSyscall(FEXCore::Core::CpuStateFrame* Frame,
   // this reason.
   //
   // it does not return if it delivers.
-  if (auto* Self = static_cast<GuestThread*>(Frame->Thread->FrontendPtr)) {
-    Threads::DeliverPendingAtSyscallExit(*Self, Args->Argument[0], Result);
-  }
+  Threads::DeliverPendingAtSyscallExit(*Self, Args->Argument[0], Result);
   return Result;
 }
 
@@ -1043,13 +1102,33 @@ uint64_t LinuxSyscallHandler::Dispatch(FEXCore::Core::CpuStateFrame* Frame, FEXC
   case SYS_x64_ioctl:
     return FromHost(::syscall(SYS_ioctl, static_cast<int>(Arg0), Arg1, Arg2));
   // struct timespec, timeval and sysinfo are all plain 64-bit words on both architectures.
-  case SYS_x64_clock_gettime:
-    return FromHost(::clock_gettime(static_cast<clockid_t>(Arg0), reinterpret_cast<struct timespec*>(Arg1)));
+  case SYS_x64_clock_gettime: {
+    auto* Time = reinterpret_cast<struct timespec*>(Arg1);
+    const uint64_t Result = FromHost(::clock_gettime(static_cast<clockid_t>(Arg0), Time));
+    // the pauses are taken out of the monotonic clocks -- see IsMonotonic. a run that has never
+    // paused pays one load and a branch that is never taken.
+    if (const uint64_t Paused = Threads::PausedNanos(); Paused && Result == 0 && Time &&
+                                                        IsMonotonic(static_cast<clockid_t>(Arg0))) {
+      ShiftTimespec(*Time, -static_cast<int64_t>(Paused));
+    }
+    return Result;
+  }
   case SYS_x64_clock_getres:
     return FromHost(::clock_getres(static_cast<clockid_t>(Arg0), reinterpret_cast<struct timespec*>(Arg1)));
-  case SYS_x64_clock_nanosleep:
-    return FromHost(::clock_nanosleep(static_cast<clockid_t>(Arg0), static_cast<int>(Arg1),
-                                      reinterpret_cast<const struct timespec*>(Arg2), reinterpret_cast<struct timespec*>(Arg3)));
+  case SYS_x64_clock_nanosleep: {
+    // a deadline on the guest's monotonic clock is that much later on the host's. clock_nanosleep
+    // reports failure by its return value rather than through errno, hence no FromHost.
+    const auto* Asked = reinterpret_cast<const struct timespec*>(Arg2);
+    struct timespec Deadline {};
+    if (const uint64_t Paused = Threads::PausedNanos(); Paused && Asked && (Arg1 & TIMER_ABSTIME) &&
+                                                        IsMonotonic(static_cast<clockid_t>(Arg0))) {
+      Deadline = *Asked;
+      ShiftTimespec(Deadline, static_cast<int64_t>(Paused));
+      Asked = &Deadline;
+    }
+    return static_cast<uint64_t>(-static_cast<int64_t>(::clock_nanosleep(
+      static_cast<clockid_t>(Arg0), static_cast<int>(Arg1), Asked, reinterpret_cast<struct timespec*>(Arg3))));
+  }
   case SYS_x64_nanosleep:
     return FromHost(::nanosleep(reinterpret_cast<const struct timespec*>(Arg0), reinterpret_cast<struct timespec*>(Arg1)));
   case SYS_x64_gettimeofday:
@@ -1143,7 +1222,18 @@ uint64_t LinuxSyscallHandler::Dispatch(FEXCore::Core::CpuStateFrame* Frame, FEXC
   // struct rlimit64 is two 64-bit words on both architectures.
   case SYS_x64_prlimit64: return FromHost(::syscall(SYS_prlimit64, Arg0, Arg1, Arg2, Arg3));
   // FUTEX_* operation codes are architecture-independent.
-  case SYS_x64_futex: return FromHost(::syscall(SYS_futex, Arg0, Arg1, Arg2, Arg3, Arg4, Arg5));
+  case SYS_x64_futex: {
+    // an absolute deadline on the guest's monotonic clock is that much later on the host's -- the
+    // shape CoreCLR's own timed waits take, since its condition variables run on CLOCK_MONOTONIC.
+    uint64_t Timeout = Arg3;
+    struct timespec Deadline {};
+    if (const uint64_t Paused = Threads::PausedNanos(); Paused && Timeout && FutexHasMonotonicDeadline(Arg1)) {
+      Deadline = *reinterpret_cast<const struct timespec*>(Timeout);
+      ShiftTimespec(Deadline, static_cast<int64_t>(Paused));
+      Timeout = reinterpret_cast<uint64_t>(&Deadline);
+    }
+    return FromHost(::syscall(SYS_futex, Arg0, Arg1, Arg2, Timeout, Arg4, Arg5));
+  }
 
   case SYS_x64_uname: {
     // new_utsname is six 65-byte fields on both architectures; only the contents are ours to

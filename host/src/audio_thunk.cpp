@@ -13,6 +13,7 @@
 #include <unistd.h>
 
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -128,6 +129,12 @@ struct StreamInfo {
   int64_t FramesReadAtOpen {};
   uint64_t OpenNanos {};
   uint64_t LastReportNanos {};
+  // how long the host has held this stream paused, so the share of the sample rate it reports is a
+  // share of the time it was meant to be playing. a stream the guest paused itself is not counted:
+  // that silence is the guest's to explain.
+  uint64_t HeldNanos {};
+  uint64_t HeldSinceNanos {};
+  bool HeldByHost {};
 };
 
 std::mutex StreamLock;
@@ -160,6 +167,8 @@ std::atomic<uint64_t> LastWriteNanos {};
 // needing a debugger this device will not give us.
 std::atomic<int> LastWriteTid {};
 std::atomic<bool> WatchdogRunning {};
+// while the guest is paused it submits nothing and that is the point, so the watchdog says nothing.
+std::atomic<bool> HostPaused {};
 // **on whenever audio is**, and that is deliberate rather than a debug leftover. it is silent until
 // the guest stops submitting, it costs one sleeping thread and one clock read a second, and the
 // failure it exists to report is one that otherwise announces itself only as "the sound went away".
@@ -234,7 +243,8 @@ void ReportStream(const StreamInfo& Info, uint64_t Now) {
   }
   auto* Stream = static_cast<AAudioStream*>(Info.Stream);
   const int64_t Read = FramesRead(Stream) - Info.FramesReadAtOpen;
-  const double Seconds = static_cast<double>(Now - Info.OpenNanos) / 1e9;
+  const uint64_t Held = Info.HeldNanos + (Info.HeldByHost ? Now - Info.HeldSinceNanos : 0);
+  const double Seconds = static_cast<double>(Now - Info.OpenNanos - Held) / 1e9;
   const double Expected = Seconds * static_cast<double>(Info.SampleRate);
   std::printf("[audio] stream %p: %lld frames read in %.2f s = %.1f%% of %d Hz, %lld written, %d xruns\n",
               Info.Stream, static_cast<long long>(Read), Seconds,
@@ -350,6 +360,9 @@ void WatchdogLoop() {
   double QuietAtReport = 0.0;
   for (;;) {
     ::usleep(1000000);
+    if (HostPaused.load(std::memory_order_acquire)) {
+      continue;
+    }
     std::vector<StreamInfo> Copy;
     {
       std::lock_guard<std::mutex> Guard(StreamLock);
@@ -611,6 +624,113 @@ void SetLibraryPath(const char* Path) {
   if (Path && *Path) {
     LibraryPath = Path;
   }
+}
+
+namespace {
+
+// --- pausing the streams with the guest -----------------------------------------------------
+//
+// **on a thread of its own, because AAudio's answer can take seconds.** a stream that has sat paused
+// for a while can have been taken back by the audio server, and the request to start it again then
+// waits on the server before reporting the stream disconnected -- 2.2 s was measured, on the app's UI
+// thread, before this moved. a disconnected stream needs nothing from here: the guest's next write is
+// refused, and the emulator reopens the stream on the same device, which it already does for a
+// headset unplugged mid-game.
+//
+// **one thread, applying the state last asked for**, so that a pause and a resume asked for in quick
+// succession arrive in the order they were asked rather than in whichever order two threads happened
+// to reach the stream lock -- the wrong order being a game running over streams left paused.
+
+std::mutex ControlLock;
+std::condition_variable ControlChanged;
+bool WantHeld {};
+bool ControlStarted {};
+
+void HoldStreams() {
+  auto GetState = Host<aaudio_stream_state_t (*)(AAudioStream*)>(Id_AAudioStream_getState);
+  auto RequestPause = Host<aaudio_result_t (*)(AAudioStream*)>(Id_AAudioStream_requestPause);
+  if (!GetState || !RequestPause) {
+    return;
+  }
+  unsigned Held = 0;
+  std::lock_guard<std::mutex> Guard(StreamLock);
+  for (auto& Info : Streams) {
+    auto* Stream = static_cast<AAudioStream*>(Info.Stream);
+    const aaudio_stream_state_t State = GetState(Stream);
+    if (Info.HeldByHost || (State != AAUDIO_STREAM_STATE_STARTED && State != AAUDIO_STREAM_STATE_STARTING)) {
+      continue;
+    }
+    if (RequestPause(Stream) == AAUDIO_OK) {
+      Info.HeldByHost = true;
+      Info.HeldSinceNanos = NowNanos();
+      ++Held;
+    }
+  }
+  std::printf("[audio] paused %u of %zu stream(s) with the guest\n", Held, Streams.size());
+  std::fflush(stdout);
+}
+
+void ReleaseStreams() {
+  auto RequestStart = Host<aaudio_result_t (*)(AAudioStream*)>(Id_AAudioStream_requestStart);
+  auto ToText = Host<const char* (*)(int32_t)>(Id_AAudio_convertResultToText);
+  std::lock_guard<std::mutex> Guard(StreamLock);
+  for (auto& Info : Streams) {
+    if (!Info.HeldByHost) {
+      continue;
+    }
+    Info.HeldByHost = false;
+    Info.HeldNanos += NowNanos() - Info.HeldSinceNanos;
+    if (!RequestStart) {
+      continue;
+    }
+    const aaudio_result_t Result = RequestStart(static_cast<AAudioStream*>(Info.Stream));
+    if (Result != AAUDIO_OK) {
+      std::printf("[audio] stream %p did not start again after the pause: %s (%d). the guest reopens it on "
+                  "its next write\n",
+                  Info.Stream, ToText ? ToText(Result) : "?", Result);
+      std::fflush(stdout);
+    }
+  }
+}
+
+void ControlLoop() {
+  bool Held = false;
+  std::unique_lock Lock(ControlLock);
+  for (;;) {
+    ControlChanged.wait(Lock, [&Held] { return WantHeld != Held; });
+    const bool Target = WantHeld;
+    Lock.unlock();
+    if (Target) {
+      HoldStreams();
+    } else {
+      ReleaseStreams();
+    }
+    Lock.lock();
+    Held = Target;
+  }
+}
+
+} // namespace
+
+void SetPaused(bool Paused) {
+  if (!ThunkEnabled) {
+    return;
+  }
+  // the watchdog is told at once, from here, so that it neither reports the pause as a stall nor
+  // counts the time paused against the guest once it is resumed.
+  if (!Paused && LastWriteNanos.load(std::memory_order_relaxed)) {
+    LastWriteNanos.store(NowNanos(), std::memory_order_relaxed);
+  }
+  HostPaused.store(Paused, std::memory_order_release);
+  {
+    std::lock_guard Lock(ControlLock);
+    WantHeld = Paused;
+    if (!ControlStarted) {
+      ControlStarted = true;
+      std::thread(ControlLoop).detach();
+    }
+  }
+  ControlChanged.notify_all();
 }
 
 void ReportStreams() {
