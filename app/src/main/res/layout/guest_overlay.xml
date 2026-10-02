@@ -119,9 +119,8 @@
         -->
         <!--
           pausing and resuming, above leaving: the one of the two that is taken back. filled like Exit
-          game for the same reason Exit game is - the accent is the role every scheme names - and its
-          label and icon say what a tap does now, so they swap while the game is paused. GuestOverlay
-          sets both.
+          for the same reason Exit is - the accent is the role every scheme names - and its label and
+          icon say what a tap does now, so they swap while the game is paused. GuestOverlay sets both.
         -->
         <com.google.android.material.button.MaterialButton
             android:id="@+id/pause"
