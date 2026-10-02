@@ -22,11 +22,11 @@ import com.google.android.material.button.MaterialButton
 /**
  * the panel the back button opens over a running game.
  *
- * **it is the only thing the back button does during a run, and that is the point.** a guest run has
- * no state that survives being left, so a back press that finished the activity would end a game
- * silently, at the depth of one accidental gesture. here back opens this, back again closes it, and
- * leaving is a labelled button inside it -- two deliberate acts, of which the second says what it
- * does.
+ * **it is the only thing the back button does during a run, and that is the point.** a back press that
+ * finished the activity would end a game silently, at the depth of one accidental gesture -- the game
+ * survives the app being left, and does not survive the activity ending. here back opens this, back
+ * again closes it, and leaving is a labelled button inside it -- two deliberate acts, of which the
+ * second says what it does. pausing is the button above it.
  *
  * **most of it is the log**, which is what the panel is for now: everything this process has printed,
  * in the order it printed it -- the emulator's own logger, its raw console writes, the host layer's
@@ -46,7 +46,12 @@ import com.google.android.material.button.MaterialButton
  * screen in pixels would be the same answer on this device and a wrong one on a panel of another
  * shape, and the layout already has a mechanism for a proportion.
  */
-class GuestOverlay(private val context: Context, private val onExit: Runnable) {
+class GuestOverlay(
+    private val context: Context,
+    private val onPause: Runnable,
+    private val onResume: Runnable,
+    private val onExit: Runnable,
+) {
 
     /**
      * the whole-screen dim, which is also what swallows a touch aimed past the panel.
@@ -71,6 +76,10 @@ class GuestOverlay(private val context: Context, private val onExit: Runnable) {
     private val log: RecyclerView = panel.findViewById(R.id.log)
     private val empty: TextView = panel.findViewById(R.id.empty)
     private val lines = LogAdapter(context)
+    private val pause: MaterialButton = panel.findViewById(R.id.pause)
+
+    /** whether the game is paused, as the activity last said through [setPaused]. */
+    private var paused = false
 
     /** whether a back press closes this or opens it. flipped before the animation, not after it. */
     var isOpen: Boolean = false
@@ -120,6 +129,17 @@ class GuestOverlay(private val context: Context, private val onExit: Runnable) {
         log.itemAnimator = null
 
         panel.findViewById<MaterialButton>(R.id.copy).setOnClickListener { copy() }
+        pause.setOnClickListener {
+            // **resuming closes the panel and pausing does not.** a person resuming wants the game,
+            // and the panel dims it and takes the touches aimed at it; a person pausing has stopped
+            // to do something here, which is usually reading the log the panel is mostly made of.
+            if (paused) {
+                close()
+                onResume.run()
+            } else {
+                onPause.run()
+            }
+        }
         panel.findViewById<MaterialButton>(R.id.exit).setOnClickListener {
             // the run ends here and the process ends with it, which is the same ending every launch
             // that is not exit_group already takes. the guest is not asked to stop first because
@@ -151,6 +171,19 @@ class GuestOverlay(private val context: Context, private val onExit: Runnable) {
 
     /** Added over the surface by [MainActivity], above the unpacking bar. */
     fun view(): View = root
+
+    /**
+     * whether the game is paused, which decides what the pause button says and does.
+     *
+     * **told rather than asked**, because the game pauses from places this panel never sees -- leaving
+     * the app, the button drawn over a paused game, a controller -- and the activity is the one place
+     * all of them go through.
+     */
+    fun setPaused(paused: Boolean) {
+        this.paused = paused
+        pause.setText(if (paused) R.string.overlay_resume else R.string.overlay_pause)
+        pause.setIconResource(if (paused) R.drawable.ic_play else R.drawable.ic_pause)
+    }
 
     fun open() {
         if (isOpen) {

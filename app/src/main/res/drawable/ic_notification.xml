@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  the small icon of the notification a game's foreground service has to carry.
+
+  that notification is never shown - see GuestService - but android refuses one without a small icon,
+  so it needs one. it is drawn as a mask and carries no colour of its own: ic_play's arrow, Material
+  Symbols' play at its 960 viewport, filled, so it reads as the app's if android ever draws it.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="960"
+    android:viewportHeight="960">
+
+    <path
+        android:fillColor="@android:color/white"
+        android:pathData="M320,760L320,200L760,480L320,760Z" />
+
+</vector>

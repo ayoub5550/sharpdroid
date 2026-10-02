@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  what a paused game shows: the frame it stopped on, and one button to carry on.
+
+  **the frame is a copy, held in an image, and not the surface itself.** android takes the surface away
+  whenever the app is left, and the one it hands back is empty until the guest draws into it - which a
+  paused guest does not do. so the frame is copied out at the moment of pausing, while the surface
+  still has it, and drawn here over whatever surface there is. see GuestPaused.
+
+  **no dim over it**, which is a difference from the panel the back button opens: that one is read
+  over a game, and this one is the game, waiting. the button carries its own contrast, being a filled
+  disc in the accent, so the picture under it can be left as the person left it.
+
+  the root takes every touch that lands on it, so a tap on the frozen picture is a tap on the app
+  rather than on the surface under it. the button is the only thing here that does anything.
+-->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:clickable="true"
+    android:visibility="gone">
+
+    <!--
+      the copy is exactly the surface's size, so it is stretched by nothing: fitXY maps it pixel for
+      pixel onto the area the surface covers.
+    -->
+    <ImageView
+        android:id="@+id/paused_frame"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:importantForAccessibility="no"
+        android:scaleType="fitXY" />
+
+    <!--
+      the filled icon button rather than a floating action button: the FAB takes the primary container
+      role, which the default scheme does not name, and this takes the primary role itself, which
+      every scheme does.
+    -->
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/paused_resume"
+        style="@style/Widget.Material3.Button.IconButton.Filled"
+        android:layout_width="88dp"
+        android:layout_height="88dp"
+        android:layout_gravity="center"
+        android:contentDescription="@string/paused_resume"
+        android:insetTop="0dp"
+        android:insetBottom="0dp"
+        android:padding="0dp"
+        android:tooltipText="@string/paused_resume"
+        app:icon="@drawable/ic_play"
+        app:iconGravity="textStart"
+        app:iconPadding="0dp"
+        app:iconSize="44dp" />
+
+</FrameLayout>

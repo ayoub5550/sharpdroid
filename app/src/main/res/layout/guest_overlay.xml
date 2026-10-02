@@ -11,9 +11,8 @@
   from a themed context rather than from the window - this activity wears the framework fullscreen
   theme and has no colour roles to offer. see GuestOverlay, which inflates this against that context.
 
-  **the two empty places are deliberate and neither holds a disabled control.** a second action goes
-  into `actions`, above Exit game, and a second icon goes into `header`, left of Copy. a button that
-  is present and does nothing is a bug report; a place to put one is not.
+  **the empty place is deliberate and holds no disabled control.** a second icon goes into `header`,
+  left of Copy. a button that is present and does nothing is a bug report; a place to put one is not.
 
   **android:tint and never app:tint, for every icon in this window.** app:tint is read by
   AppCompatImageView, and the inflater that swaps a plain view for that one belongs to
@@ -118,6 +117,20 @@
           accent's, and the accent is named by every scheme here where the tonal and outlined styles
           reach for roles two of them leave to Material's baseline.
         -->
+        <!--
+          pausing and resuming, above leaving: the one of the two that is taken back. filled like Exit
+          game for the same reason Exit game is - the accent is the role every scheme names - and its
+          label and icon say what a tap does now, so they swap while the game is paused. GuestOverlay
+          sets both.
+        -->
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/pause"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/overlay_pause"
+            app:icon="@drawable/ic_pause"
+            app:iconGravity="textStart" />
+
         <com.google.android.material.button.MaterialButton
             android:id="@+id/exit"
             android:layout_width="match_parent"

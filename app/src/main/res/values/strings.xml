@@ -501,6 +501,19 @@
          without a confirmation behind it - which there deliberately is not, because reaching this
          button is already a back press and a deliberate tap. -->
     <string name="overlay_exit">Exit game</string>
+    <!-- the action above it. each names what a tap does to the game, so the button reads the other
+         way round while the game is paused. -->
+    <string name="overlay_pause">Pause game</string>
+    <string name="overlay_resume">Resume game</string>
+
+    <!-- the button drawn over a paused game. it is an icon alone, so this is what a screen reader
+         says for it and the only place it is named in words. -->
+    <string name="paused_resume">Resume game</string>
+
+    <!-- the channel of the notification a game's foreground service has to carry. the notification
+         itself is never shown, since the app does not declare the permission it needs; the channel's
+         name is what the platform's settings list for the app. -->
+    <string name="guest_channel">Running game</string>
 
     <!-- the log window that fills most of that panel. "Log" alone, because the panel it heads is
          over a running game and there is only one log: what this run has printed, whichever part of

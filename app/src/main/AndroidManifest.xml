@@ -47,6 +47,19 @@
     -->
     <uses-permission android:name="android.permission.VIBRATE" />
 
+    <!--
+      the foreground service a game holds while it is up, on android 13 and later - see GuestService.
+      both are normal permissions, granted at install.
+
+      **POST_NOTIFICATIONS is not declared, and that is the point rather than an omission.** android
+      runs no foreground service without a notification, and from 13 an app that does not declare this
+      can never have one shown, nor can the person switch one on. the service is then visible only as
+      the app's line among the active apps in quick settings, which android keeps for every foreground
+      service. declaring it would make the notification one setting away.
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
     <application
         android:label="@string/app_name"
         android:hardwareAccelerated="true"
@@ -194,5 +207,24 @@
             android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen"
             android:screenOrientation="landscape"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|density|smallestScreenSize|uiMode" />
+
+        <!--
+          what keeps a game in memory while the app is left, and it runs in :guest because that is the
+          process it protects. started by MainActivity when a game starts, on android 13 and later
+          only, and ended with the process.
+
+          specialUse, because none of the named types is this: a game paused in memory is not media
+          playing, not a sync and not a connected device. the property is the sentence android asks
+          for to say what it is instead.
+        -->
+        <service
+            android:name=".GuestService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse"
+            android:process=":guest">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Keeps an emulated game, paused, in memory while the user is in another app." />
+        </service>
     </application>
 </manifest>

@@ -134,6 +134,28 @@ class GuestLoading(
 
     private var polling = false
 
+    /** whether the guest has drawn and this screen is gone. nothing restarts the poll after it. */
+    private var done = false
+
+    /**
+     * `SystemClock.uptimeMillis()` when the game was paused, or -1 while it is not.
+     *
+     * **a pause stops the clock this screen sweeps against**, since the boot it is predicting stops
+     * with it -- a bar that went on moving would arrive at the end of a boot that had not happened.
+     */
+    private var pausedAt = -1L
+
+    /**
+     * the stretches of this boot spent paused, as pairs of where each began and how long it lasted,
+     * in milliseconds on the host layer's clock -- whose zero is [startedAt].
+     *
+     * **the host layer's checkpoint times include them**, because its clock is the wall's. so each
+     * time is read with the pauses before it taken out, both for the rate the bar corrects to and for
+     * the record [BootRecord] keeps: one paused boot filed as a slow one would make the next launch's
+     * estimate wrong by however long somebody was away.
+     */
+    private val held = mutableListOf<Pair<Long, Long>>()
+
     private val frame = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
             if (!polling) {
@@ -260,10 +282,48 @@ class GuestLoading(
                 show(0)
             }
             detail.setText(R.string.loading_starting)
+            // a launch paused before the host layer started has its first thread parked before it
+            // runs anything, so the clock does not start until the pause is over -- see [resume].
+            if (pausedAt < 0) {
+                polling = true
+                Choreographer.getInstance().postFrameCallback(frame)
+            }
+        }
+    }
+
+    /** the game has paused. the bar stops where it is. */
+    fun pause() {
+        if (done || pausedAt >= 0) {
+            return
+        }
+        pausedAt = SystemClock.uptimeMillis()
+        polling = false
+        Choreographer.getInstance().removeFrameCallback(frame)
+    }
+
+    /** the game has resumed. the bar carries on from where it stopped, with the pause taken out. */
+    fun resume() {
+        if (pausedAt < 0) {
+            return
+        }
+        val now = SystemClock.uptimeMillis()
+        // only the part of the pause that fell inside this boot: one that began before the host layer
+        // started is a wait the host layer's clock never saw.
+        if (startedAt > 0) {
+            val from = maxOf(pausedAt, startedAt)
+            if (now > from) {
+                held.add((from - startedAt) to (now - from))
+            }
+        }
+        pausedAt = -1
+        if (!done && startedAt > 0) {
             polling = true
             Choreographer.getInstance().postFrameCallback(frame)
         }
     }
+
+    /** how long this boot had been paused by [at] milliseconds on the host layer's clock. */
+    private fun heldBefore(at: Long): Long = held.filter { it.first < at }.sumOf { it.second }
 
     /**
      * one animation frame's worth of asking where the boot has got to.
@@ -311,7 +371,7 @@ class GuestLoading(
         for (i in reached - 1 downTo 0) {
             val was = timeline[ids[i]] ?: continue
             if (i < times.size && times[i] > 0 && was > 0) {
-                scale = times[i].toDouble() / was.toDouble()
+                scale = (times[i] - heldBefore(times[i])).toDouble() / was.toDouble()
                 break
             }
         }
@@ -321,7 +381,7 @@ class GuestLoading(
         if (ends <= 0) {
             return
         }
-        val elapsed = SystemClock.uptimeMillis() - startedAt
+        val elapsed = SystemClock.uptimeMillis() - startedAt - held.sumOf { it.second }
         val predicted = scale * ends
         val thousandths = if (predicted > 0) (elapsed * 1000 / predicted).toInt() else 0
         // never backwards, and never full while the screen is still up.
@@ -340,8 +400,12 @@ class GuestLoading(
      */
     private fun complete() {
         polling = false
+        done = true
         Choreographer.getInstance().removeFrameCallback(frame)
+        // -1 is a checkpoint that was never passed and stays -1.
         val times = HostLayer.nativeBootCheckpointTimes()
+            .map { if (it > 0) it - heldBefore(it) else it }
+            .toLongArray()
         root.visibility = View.GONE
         onFirstFrame.onFirstFrame(times)
     }

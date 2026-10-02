@@ -317,6 +317,28 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     private GuestLoading loading;
 
     /**
+     * what a paused game shows: the frame it stopped on, and the button that carries on.
+     *
+     * <p>between the loading screen and the back panel, so that it covers a boot that was paused and
+     * the panel still opens over it.
+     */
+    private GuestPaused pausedScreen;
+
+    /** the surface the guest renders into, which the paused screen copies its picture out of. */
+    private SurfaceView surface;
+
+    /**
+     * whether the game is paused.
+     *
+     * <p><b>leaving the app pauses it, and only a person resumes it</b> -- the play button over the
+     * game, the panel's button, or a controller's A or Start. coming back to the app does not, which
+     * is Eden's rule and the right one: whoever comes back may not be ready for the game to carry on,
+     * and a game that starts moving the moment the screen appears has already used up the first second
+     * of their attention.
+     */
+    private boolean paused;
+
+    /**
      * this launch's game as the dump describes itself: its title, its identity and its artwork.
      *
      * <p><b>read here rather than handed down, and that is one extra fewer on every launch.</b> the
@@ -519,8 +541,9 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         // step with the first for no new capability.
         settingsEnv = settings.guestEnvironment();
 
-        // a game boot is minutes of work with no touch input, and the screen going off takes the
-        // surface with it.
+        // a game boot is minutes of work with no touch input, and a game played on a controller has
+        // none either -- and the screen going off pauses the game. cleared while the game is paused,
+        // which is when a screen left alone should be allowed to go off.
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 
         // **the two Controls switches, read before anything can act on them.** neither becomes a
@@ -556,6 +579,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
 
         SurfaceView view = new SurfaceView(this);
         view.getHolder().addCallback(this);
+        surface = view;
         setContentView(withOverlays(view));
         goFullscreen();
     }
@@ -574,10 +598,25 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
      */
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
+        // **a paused game is resumed by A or Start, as well as by a tap**, because on a handheld the
+        // controller is in both hands and the button drawn over the game is not. both halves of the
+        // press are taken here and the release does the resuming, so the game never sees an A it was
+        // not running for. only with the panel closed: with it open, the panel's own button is the
+        // way back.
+        if (paused && !overlay.isOpen() && isResumeKey(event.getKeyCode())) {
+            if (event.getAction() == KeyEvent.ACTION_UP) {
+                resume();
+            }
+            return true;
+        }
         if (PadState.onKey(event)) {
             return true;
         }
         return super.dispatchKeyEvent(event);
+    }
+
+    private static boolean isResumeKey(int keyCode) {
+        return keyCode == KeyEvent.KEYCODE_BUTTON_A || keyCode == KeyEvent.KEYCODE_BUTTON_START;
     }
 
     /**
@@ -634,16 +673,21 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     }
 
     /**
-     * releases every control on the way out of the foreground.
+     * pauses the game and releases every control, on the way out of the foreground.
      *
-     * <p><b>the run keeps going and that is deliberate</b> -- nothing here pauses emulation. what must
-     * not keep going is a button: this activity stops receiving key events when it loses focus, so the
-     * release for a button held as the app went away would never arrive and the guest would see it held
-     * for the rest of the run.
+     * <p><b>here rather than in {@code onStop}, which is Eden's choice too</b>: this is the last moment
+     * the surface still holds the frame the paused screen copies, and the screen going off, a dialog
+     * over the game and the recents screen all pass through it. coming back does not resume -- see
+     * {@link #paused}.
+     *
+     * <p>the controls are released because this activity stops receiving key events when it loses
+     * focus, so the release for a button held as the app went away would never arrive and the guest
+     * would see it held from the moment it is resumed.
      */
     @Override
     protected void onPause() {
         super.onPause();
+        pause();
         android.hardware.input.InputManager input =
                 getSystemService(android.hardware.input.InputManager.class);
         if (input != null) {
@@ -653,12 +697,47 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     }
 
     /**
+     * stops the game where it stands, its state kept in memory.
+     *
+     * <p>a run that has not started, has been refused or is ending has nothing to pause. one that has
+     * started but not yet reached the host layer is paused all the same: the guest's first thread
+     * parks before it runs anything, and the loading screen stops its bar where it is.
+     */
+    private void pause() {
+        if (paused || !started || refused || ending) {
+            return;
+        }
+        paused = true;
+        AppLog.i(TAG, "[app] pausing the game");
+        HostLayer.nativePause();
+        loading.pause();
+        pausedScreen.show(surface);
+        overlay.setPaused(true);
+        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+    }
+
+    /** lets the game carry on from where it stopped. */
+    private void resume() {
+        if (!paused) {
+            return;
+        }
+        paused = false;
+        AppLog.i(TAG, "[app] resuming the game");
+        HostLayer.nativeResume();
+        loading.resume();
+        pausedScreen.hide();
+        overlay.setPaused(false);
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+    }
+
+    /**
      * what a back press does during a run.
      *
-     * <p><b>it never leaves.</b> a run holds nothing that survives being left -- no pause, no save of
-     * ours -- so finishing on a back press would end a game at the depth of one accidental gesture,
-     * and this activity is a full-screen surface where a gesture is easy to make by mistake. so back
-     * opens the overlay, back again closes it, and leaving is the labelled button inside it.
+     * <p><b>it never leaves.</b> a game survives the app being left but not this activity finishing --
+     * there is no save of ours -- so finishing on a back press would end a game at the depth of one
+     * accidental gesture, and this activity is a full-screen surface where a gesture is easy to make
+     * by mistake. so back opens the overlay, back again closes it, and leaving is the labelled button
+     * inside it.
      *
      * <p>{@code super} is deliberately never called, which is what makes that a rule rather than a
      * default. the framework's answer to a back press on the last activity of a task is to finish
@@ -701,10 +780,16 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         root.addView(loading.view(), new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
+        // over the loading screen, so a boot that was paused shows the button that resumes it; under
+        // the panel, so back still opens over a paused game. GONE until the game first pauses.
+        pausedScreen = new GuestPaused(themed, this::resume);
+        root.addView(pausedScreen.view(), new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
         // it is invisible until a back press and consumes nothing until then -- see GuestOverlay,
         // which is INVISIBLE rather than GONE so that the panel has a width to slide in from on the
         // first open.
-        overlay = new GuestOverlay(themed, () -> {
+        overlay = new GuestOverlay(themed, this::pause, this::resume, () -> {
             AppLog.i(TAG, "[app] exit game");
             endRun();
         });
@@ -797,8 +882,15 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         super.onDestroy();
         // so that a request already in flight cannot buzz after the run it belonged to is over.
         PadRumble.detach();
-        if (ending) {
+        // **finishing for any reason ends the run, not only endRun's.** the other way an activity
+        // finishes is the person swiping the task away, and a process holding a foreground service is
+        // one android may keep after its task is gone -- which would leave the game up, paused and
+        // unreachable, with nothing to return to it by.
+        if (ending || isFinishing()) {
             AppLog.i(TAG, "[app] the run is over, and so is this process");
+            // the service first, and synchronously: a process ended with the service still started is
+            // one android restarts the service into, as a new process holding no game.
+            GuestService.stop(this);
             android.os.Process.killProcess(android.os.Process.myPid());
         }
     }
@@ -841,6 +933,10 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
 
         if (!started) {
             started = true;
+            // the service that keeps the game in memory while the app is left, on android 13 and later,
+            // started now because this is when the game starts and because android allows one to
+            // start only while the app is on screen. it ends with this process.
+            GuestService.start(this);
             // endRun runs however runGuest leaves -- a payload that did not resolve, a game that is
             // not there, or a guest that returned. the one exit it never sees is exit_group, which
             // does not come back through nativeRun at all and does not need to: it has already
@@ -859,8 +955,9 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
 
     @Override
     public void surfaceDestroyed(SurfaceHolder holder) {
-        // the guest keeps running and its presents become no-ops. it has no idea, which is the
-        // point of the host layer owning the swapchain.
+        // the guest is not told. by now it is paused -- onPause comes first -- and the vulkan thunk
+        // remakes its surface on whichever window replaces this one, so the guest's next frame after
+        // a resume finds a swapchain to recreate rather than a surface that is gone.
         HostLayer.nativeSetSurface(null);
     }
 
