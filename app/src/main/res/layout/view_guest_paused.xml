@@ -36,6 +36,10 @@
       the filled icon button rather than a floating action button: the FAB takes the primary container
       role, which the default scheme does not name, and this takes the primary role itself, which
       every scheme does.
+
+      **all four insets are zero, because the disc is drawn inside them.** the button style insets the
+      top and bottom 4dp and the icon-button style adds 4dp left and right, so any one left in place
+      draws an oval in this square rather than a circle.
     -->
     <com.google.android.material.button.MaterialButton
         android:id="@+id/paused_resume"
@@ -44,7 +48,9 @@
         android:layout_height="88dp"
         android:layout_gravity="center"
         android:contentDescription="@string/paused_resume"
+        android:insetLeft="0dp"
         android:insetTop="0dp"
+        android:insetRight="0dp"
         android:insetBottom="0dp"
         android:padding="0dp"
         android:tooltipText="@string/paused_resume"
