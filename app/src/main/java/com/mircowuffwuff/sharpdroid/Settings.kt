@@ -179,6 +179,7 @@ class Settings private constructor(
         // person who opened it and put it back would otherwise be reported as having changed
         // something the app does exactly as it shipped.
         if (loadingEstimate == false) count++
+        if (autoResume == true) count++
         if (strictDynlib == true) count++
         if (fexPreset?.let { it != FexPreset.DEFAULT } == true) count++
         // **each knob moved off what the rung settles on, rather than each knob that is set.** a row
@@ -500,6 +501,22 @@ class Settings private constructor(
         set(value) = prefs.edit().putBoolean(KEY_LOADING_ESTIMATE, value!!).apply()
 
     /**
+     * whether coming back to the app resumes a game that leaving it paused.
+     *
+     * **off -- the default -- is Eden's rule**: leaving pauses, and only a person resumes. on undoes
+     * exactly the pause that leaving made and no other, so a game somebody paused from the back panel
+     * before leaving is still paused when they return. and a pause that coming back will undo draws
+     * no play button, since one that appeared and went in the same moment would only be a flicker.
+     *
+     * **the app's rather than a title's**, like the loading estimate: it is about how a person uses
+     * the app rather than about a game. so it is not offered per game and does not fall back -- see
+     * [forGame]. read by the process that runs the guest and never a launch argument.
+     */
+    var autoResume: Boolean?
+        get() = if (prefs.contains(KEY_AUTO_RESUME)) prefs.getBoolean(KEY_AUTO_RESUME, false) else null
+        set(value) = prefs.edit().putBoolean(KEY_AUTO_RESUME, value!!).apply()
+
+    /**
      * whether FEXCore is told what this processor can do, out of the processor's own ID registers.
      *
      * **on is the honest answer and off is the fallback**, which is the opposite way round from most
@@ -569,6 +586,7 @@ class Settings private constructor(
         const val KEY_CUSTOM_COLOUR = "custom_colour"
         const val KEY_FULLSCREEN = "fullscreen"
         const val KEY_LOADING_ESTIMATE = "loading_estimate"
+        const val KEY_AUTO_RESUME = "auto_resume"
         const val KEY_BUILD = "build"
         const val KEY_STRICT = "strict_dynlib"
         const val KEY_FEX_PRESET = "fex_preset"

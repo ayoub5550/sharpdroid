@@ -151,6 +151,12 @@
     <string name="setting_loading_estimate">Estimate loading progress</string>
     <string name="setting_loading_estimate_summary">Display an approximate progress percentage while a game loads. Based on how long it took last time.</string>
 
+    <!-- **the second sentence is the rule, and the row is wrong without it.** what is resumed is the
+         pause that leaving the app made and no other, so a game paused from the back panel before
+         leaving stays paused - and a summary saying only "continue a game" would promise that one too. -->
+    <string name="setting_auto_resume">Resume games on return</string>
+    <string name="setting_auto_resume_summary">Continue a game as soon as you come back to the app. A game you paused yourself stays paused.</string>
+
     <string name="setting_host_feature_probe">Probe host instructions</string>
     <string name="setting_host_feature_probe_summary">Tell the JIT which instructions this device\'s processor supports. Translated code takes shorter routes and games load faster.</string>
 

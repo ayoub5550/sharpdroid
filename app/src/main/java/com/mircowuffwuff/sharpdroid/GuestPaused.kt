@@ -47,6 +47,14 @@ class GuestPaused(context: Context, private val onResume: Runnable) {
     private var pauses = 0
 
     /**
+     * whether the game is paused as far as this screen knows: from [show] until [hide].
+     *
+     * **a field of its own rather than the button's visibility**, because a pause can draw no button
+     * at all and its copy is still wanted -- see [show].
+     */
+    private var held = false
+
+    /**
      * whether the back panel is open over this, as [GuestOverlay] last said. **the button is faded
      * out while it is**: the panel carries a Resume of its own, and two on screen at once is one too
      * many.
@@ -80,17 +88,23 @@ class GuestPaused(context: Context, private val onResume: Runnable) {
     fun view(): View = root
 
     /**
-     * the game has just paused: show the button, and copy the frame out of [surface] while it is
-     * still there to copy.
+     * the game has just paused: copy the frame out of [surface] while it is still there to copy, and
+     * show the [button] that resumes it if there is to be one.
+     *
+     * **there is not when coming back will resume it by itself** -- a pause that leaving made, with
+     * the App section's Resume games on return on. coming back then shows the game carrying on, and a
+     * button that appeared for a frame and went would be a flicker of something nobody can press. the
+     * frame is copied either way, since it is what covers the empty surface until the game has drawn.
      */
-    fun show(surface: SurfaceView) {
+    fun show(surface: SurfaceView, button: Boolean) {
         stopWaiting()
         pauses++
+        held = true
         root.visibility = View.VISIBLE
         // a pause taken from the back panel happens under it, so the button arrives faded out.
         resume.animate().cancel()
         resume.alpha = if (covered) 0f else 1f
-        resume.visibility = View.VISIBLE
+        resume.visibility = if (button) View.VISIBLE else View.GONE
         // **a frame already held is kept.** pausing again before the last picture went away -- a tap
         // on Resume and then straight back out of the app -- would otherwise copy the surface in the
         // middle of being replaced.
@@ -101,6 +115,7 @@ class GuestPaused(context: Context, private val onResume: Runnable) {
 
     /** the game has just resumed: the button goes now, and the picture once the game has drawn. */
     fun hide() {
+        held = false
         resume.visibility = View.GONE
         if (frame == null) {
             gone()
@@ -139,7 +154,7 @@ class GuestPaused(context: Context, private val onResume: Runnable) {
         }
         val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         PixelCopy.request(surface, bitmap, { result ->
-            if (result == PixelCopy.SUCCESS && pause == pauses && resume.visibility == View.VISIBLE && frame == null) {
+            if (result == PixelCopy.SUCCESS && pause == pauses && held && frame == null) {
                 frame = bitmap
                 still.setImageBitmap(bitmap)
             } else {

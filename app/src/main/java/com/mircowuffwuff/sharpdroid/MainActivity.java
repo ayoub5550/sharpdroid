@@ -332,11 +332,30 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
      *
      * <p><b>leaving the app pauses it, and only a person resumes it</b> -- the play button over the
      * game, the panel's button, or a controller's A or Start. coming back to the app does not, which
-     * is Eden's rule and the right one: whoever comes back may not be ready for the game to carry on,
+     * is Eden's rule and the default: whoever comes back may not be ready for the game to carry on,
      * and a game that starts moving the moment the screen appears has already used up the first second
-     * of their attention.
+     * of their attention. {@link #autoResume} is the way a person opts out of it.
      */
     private boolean paused;
+
+    /**
+     * whether the pause in effect is the one leaving the app made, rather than one a person took from
+     * the panel.
+     *
+     * <p><b>only that one is ever undone by coming back.</b> a person who paused and then left wants
+     * the game paused when they return, and leaving changed nothing about that -- which is also why a
+     * pause already in effect when the app is left keeps the reason it had.
+     */
+    private boolean pausedByLeaving;
+
+    /**
+     * the App section's Resume games on return: whether coming back to the app undoes a pause that
+     * leaving it made.
+     *
+     * <p><b>with it on, that pause draws no play button</b>, only the frozen frame -- see
+     * {@link GuestPaused#show}. read once for the run, as the Controls rows are.
+     */
+    private boolean autoResume;
 
     /**
      * this launch's game as the dump describes itself: its title, its identity and its artwork.
@@ -567,6 +586,9 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         // null, and read as untouched however the switch is actually set. every other row this
         // activity reads is one a game may override; this one is the app's, like the theme.
         loadingEstimate = !Boolean.FALSE.equals(Settings.of(this).getLoadingEstimate());
+        // and Resume games on return, the App section's too and asked the same way, off unless it was
+        // turned on.
+        autoResume = Boolean.TRUE.equals(Settings.of(this).getAutoResume());
 
         // the vibrator, before the guest starts, because the host layer's rumble path resolves its
         // java side at library load and would otherwise have somewhere to call and nothing behind it.
@@ -670,6 +692,15 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         // and a sweep, because anything that changed while this activity was not listening produced no
         // callback to catch up on.
         PadState.onDeviceChanged();
+
+        // **here rather than when the surface comes back**, since a dialog over the game pauses it
+        // without taking the surface away, and then no new one ever arrives. a guest that reaches for
+        // a surface before the new window has one waits for it in the vulkan thunk, and the frozen
+        // frame covers the screen until it has drawn.
+        if (paused && pausedByLeaving && autoResume) {
+            AppLog.i(TAG, "[app] the app is back, and resumes the pause that leaving it made");
+            resume();
+        }
     }
 
     /**
@@ -677,8 +708,8 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
      *
      * <p><b>here rather than in {@code onStop}, which is Eden's choice too</b>: this is the last moment
      * the surface still holds the frame the paused screen copies, and the screen going off, a dialog
-     * over the game and the recents screen all pass through it. coming back does not resume -- see
-     * {@link #paused}.
+     * over the game and the recents screen all pass through it. coming back does not resume unless
+     * that was asked for -- see {@link #paused} and {@link #autoResume}.
      *
      * <p>the controls are released because this activity stops receiving key events when it loses
      * focus, so the release for a button held as the app went away would never arrive and the guest
@@ -687,7 +718,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     @Override
     protected void onPause() {
         super.onPause();
-        pause();
+        pause(true);
         android.hardware.input.InputManager input =
                 getSystemService(android.hardware.input.InputManager.class);
         if (input != null) {
@@ -702,16 +733,21 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
      * <p>a run that has not started, has been refused or is ending has nothing to pause. one that has
      * started but not yet reached the host layer is paused all the same: the guest's first thread
      * parks before it runs anything, and the loading screen stops its bar where it is.
+     *
+     * <p>{@code leaving} is whether the app being left is what pauses it, rather than a person -- see
+     * {@link #pausedByLeaving}.
      */
-    private void pause() {
+    private void pause(boolean leaving) {
         if (paused || !started || refused || ending) {
             return;
         }
         paused = true;
-        AppLog.i(TAG, "[app] pausing the game");
+        pausedByLeaving = leaving;
+        AppLog.i(TAG, leaving ? "[app] pausing the game, as the app was left" : "[app] pausing the game");
         HostLayer.nativePause();
         loading.pause();
-        pausedScreen.show(surface);
+        // no button for a pause that coming back will undo by itself.
+        pausedScreen.show(surface, !(leaving && autoResume));
         overlay.setPaused(true);
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
     }
@@ -722,6 +758,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
             return;
         }
         paused = false;
+        pausedByLeaving = false;
         AppLog.i(TAG, "[app] resuming the game");
         HostLayer.nativeResume();
         loading.resume();
@@ -790,7 +827,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         // which is INVISIBLE rather than GONE so that the panel has a width to slide in from on the
         // first open. the paused screen's button fades out while it is open, which is the last
         // argument.
-        overlay = new GuestOverlay(themed, this::pause, this::resume, () -> {
+        overlay = new GuestOverlay(themed, () -> pause(false), this::resume, () -> {
             AppLog.i(TAG, "[app] exit game");
             endRun();
         }, pausedScreen::cover);

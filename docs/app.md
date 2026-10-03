@@ -139,7 +139,7 @@ a subsection is a label above a run of rows rather than another button press. a 
 
 | section | rows |
 | --- | --- |
-| App | Theme, Theme color while Custom is chosen, Fullscreen mode |
+| App | Theme, Theme color while Custom is chosen, Fullscreen mode, Estimate loading progress, Resume games on return |
 | Emulation | under a SharpEmu label, SharpEmu build; under a FEXCore label, JIT accuracy and Probe host instructions |
 | Graphics | Internal resolution, and under a Vulkan label, Custom driver and Disk shader cache |
 | Controls | Automatic controller mapping, Vibrate handheld motor |
@@ -267,7 +267,9 @@ it exists from the moment the activity does rather than from the moment a guest 
 
 ### pausing
 
-**leaving the app pauses the game, and only a person resumes it**, which is Eden's rule and the right one. `onPause` pauses — home, the screen going off, the recents screen and anything opening over the game all pass through it, and it is the last moment the surface still holds the frame the paused screen copies — and coming back leaves the game paused, with its last frame on screen and a play button over it. whoever comes back may not be ready for the game to carry on, and a game that starts moving the moment the screen appears has used up the first second of their attention. it resumes from the play button, the panel's Resume, or **A or Start** on a controller with the panel closed — the release resumes, and both halves of the press are taken, so the game never sees an A it was not running for.
+**leaving the app pauses the game, and only a person resumes it**, which is Eden's rule and the default. `onPause` pauses — home, the screen going off, the recents screen and anything opening over the game all pass through it, and it is the last moment the surface still holds the frame the paused screen copies — and coming back leaves the game paused, with its last frame on screen and a play button over it. whoever comes back may not be ready for the game to carry on, and a game that starts moving the moment the screen appears has used up the first second of their attention. it resumes from the play button, the panel's Resume, or **A or Start** on a controller with the panel closed — the release resumes, and both halves of the press are taken, so the game never sees an A it was not running for.
+
+**Settings → App → Resume games on return opts out of that, and undoes only the pause that leaving made.** the activity keeps why the game is paused, and a game somebody paused from the panel before leaving is still paused when they return: leaving changed nothing about that, so a pause already in effect keeps the reason it had. a pause that coming back will undo draws **no play button**, only the frozen frame, since a button that appeared and went in the same moment would be a flicker of something nobody can press; the frame stays because the surface comes back empty and the guest takes a moment to draw into it. the resume is in `onResume` rather than at the surface's return, because a dialog over the game pauses it without taking the surface away, and then no new one arrives. a guest that reaches for a surface before the new window has one waits for it in the vulkan thunk.
 
 **what a pause is belongs to the host layer**: every guest thread stopped where it holds no host lock, the audio streams paused with it, and the guest's monotonic clock leaving the paused time out the way a linux program's leaves out a suspend — see [`host-layer.md`](host-layer.md). the two calls return at once, so nothing here waits on either.
 
@@ -345,6 +347,7 @@ the store is a `SharedPreferences` line and the state is `contains(key)`. nothin
 | Theme | the app's own screens. never reaches the guest and never reaches the argument vector |
 | Theme color | likewise — one seed colour, and Material generates the scheme from it |
 | Fullscreen mode | the app's own screens, likewise. a guest's window is fullscreen either way |
+| Resume games on return | the process that runs the guest, read once at launch and acted on when the app is left and come back to. never the argument vector |
 | Game folders | nothing on a vector either — it is a screen, and what it edits is which trees the game list scans |
 | All files access | nothing this app stores — it is android's permission, and the row shows it |
 | SharpEmu build | which build a launch that named none runs — a folder name, which is a concrete build identity |

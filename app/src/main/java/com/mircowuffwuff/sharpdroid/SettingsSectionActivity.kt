@@ -287,6 +287,12 @@ class SettingsSectionActivity : AppCompatActivity() {
             summary = R.string.setting_loading_estimate_summary,
             default = true,
         )
+        rows += SettingRow.Switch(
+            key = Settings.KEY_AUTO_RESUME,
+            title = R.string.setting_auto_resume,
+            summary = R.string.setting_auto_resume_summary,
+            default = false,
+        )
         return rows
     }
 
