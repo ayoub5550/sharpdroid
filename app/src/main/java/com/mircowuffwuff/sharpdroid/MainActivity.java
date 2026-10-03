@@ -788,11 +788,12 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
 
         // it is invisible until a back press and consumes nothing until then -- see GuestOverlay,
         // which is INVISIBLE rather than GONE so that the panel has a width to slide in from on the
-        // first open.
+        // first open. the paused screen's button fades out while it is open, which is the last
+        // argument.
         overlay = new GuestOverlay(themed, this::pause, this::resume, () -> {
             AppLog.i(TAG, "[app] exit game");
             endRun();
-        });
+        }, pausedScreen::cover);
         root.addView(overlay.view(), new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         return root;

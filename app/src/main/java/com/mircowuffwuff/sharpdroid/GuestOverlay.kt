@@ -51,7 +51,16 @@ class GuestOverlay(
     private val onPause: Runnable,
     private val onResume: Runnable,
     private val onExit: Runnable,
+    private val onCover: Cover,
 ) {
+
+    /**
+     * told as the panel starts to open or to close, with how long that takes, so that something under
+     * it can move with it: the button over a paused game, which fades out while the panel is open.
+     */
+    fun interface Cover {
+        fun cover(covered: Boolean, duration: Long)
+    }
 
     /**
      * the whole-screen dim, which is also what swallows a touch aimed past the panel.
@@ -143,8 +152,9 @@ class GuestOverlay(
             // the run ends here and the process ends with it, which is the same ending every launch
             // that is not exit_group already takes. the guest is not asked to stop first because
             // there is nothing to ask with: its threads are inside translated code, which is the
-            // very reason the host layer answers exit_group with _exit.
-            close()
+            // very reason the host layer answers exit_group with _exit. and nothing the panel covers
+            // comes back as it goes, since that is ending with the run.
+            close(uncover = false)
             onExit.run()
         }
 
@@ -189,6 +199,7 @@ class GuestOverlay(
             return
         }
         isOpen = true
+        onCover.cover(true, SLIDE)
         root.show()
         root.alpha = 0f
         root.animate().alpha(1f).setDuration(SLIDE).start()
@@ -203,11 +214,17 @@ class GuestOverlay(
         ticker.postDelayed(poll, POLL)
     }
 
-    fun close() {
+    fun close() = close(uncover = true)
+
+    /** [uncover] is false only for Exit, where what the panel covers ends with the run. */
+    private fun close(uncover: Boolean) {
         if (!isOpen) {
             return
         }
         isOpen = false
+        if (uncover) {
+            onCover.cover(false, SLIDE)
+        }
         ticker.removeCallbacks(poll)
         root.animate().alpha(0f).setDuration(SLIDE)
             .withEndAction {

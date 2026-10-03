@@ -46,6 +46,13 @@ class GuestPaused(context: Context, private val onResume: Runnable) {
      */
     private var pauses = 0
 
+    /**
+     * whether the back panel is open over this, as [GuestOverlay] last said. **the button is faded
+     * out while it is**: the panel carries a Resume of its own, and two on screen at once is one too
+     * many.
+     */
+    private var covered = false
+
     /** the presented-frame count at the moment of resuming, or -1 while nothing is being waited for. */
     private var resumedAt = -1L
     private var waitingSince = 0L
@@ -80,6 +87,9 @@ class GuestPaused(context: Context, private val onResume: Runnable) {
         stopWaiting()
         pauses++
         root.visibility = View.VISIBLE
+        // a pause taken from the back panel happens under it, so the button arrives faded out.
+        resume.animate().cancel()
+        resume.alpha = if (covered) 0f else 1f
         resume.visibility = View.VISIBLE
         // **a frame already held is kept.** pausing again before the last picture went away -- a tap
         // on Resume and then straight back out of the app -- would otherwise copy the surface in the
@@ -99,6 +109,20 @@ class GuestPaused(context: Context, private val onResume: Runnable) {
         resumedAt = HostLayer.nativePresentedFrames()
         waitingSince = SystemClock.uptimeMillis()
         Choreographer.getInstance().postFrameCallback(watch)
+    }
+
+    /**
+     * the back panel has started to open over this, or to close: the button fades out or back in
+     * over [duration], which is the panel's own, so the two read as one motion.
+     *
+     * **its opacity is all that changes.** a view over the surface that goes from `INVISIBLE` to
+     * `VISIBLE` does not reach the display until something asks for a layout -- see
+     * [OverGuestSurface] -- and a button at no opacity cannot be pressed anyway, since the panel's dim
+     * takes every touch on the screen while it is open.
+     */
+    fun cover(covered: Boolean, duration: Long) {
+        this.covered = covered
+        resume.animate().alpha(if (covered) 0f else 1f).setDuration(duration).start()
     }
 
     /**
