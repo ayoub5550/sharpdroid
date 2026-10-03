@@ -130,11 +130,10 @@ class GuestOverlay(
 
         panel.findViewById<MaterialButton>(R.id.copy).setOnClickListener { copy() }
         pause.setOnClickListener {
-            // **resuming closes the panel and pausing does not.** a person resuming wants the game,
-            // and the panel dims it and takes the touches aimed at it; a person pausing has stopped
-            // to do something here, which is usually reading the log the panel is mostly made of.
+            // **neither pausing nor resuming closes the panel.** both are tapped from inside it, by
+            // somebody who is using it, and it closes the way it does at any other time: back, or a
+            // tap past it.
             if (paused) {
-                close()
                 onResume.run()
             } else {
                 onPause.run()
