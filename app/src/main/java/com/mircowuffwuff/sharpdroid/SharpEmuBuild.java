@@ -40,7 +40,8 @@ public final class SharpEmuBuild {
 
     /**
      * the launcher-to-payload interface generation this app speaks: which environment variables the
-     * payload is expected to understand and which host window it must implement.
+     * payload is expected to understand, which host window it must implement and which pad format
+     * it reads.
      *
      * <p>a <b>range</b> rather than a single number, so bumping it does not silently invalidate
      * every build a user has already imported. outside the range the launch is refused and both
@@ -48,30 +49,26 @@ public final class SharpEmuBuild {
      * {@code SHARPEMU_HOST_WINDOW=android}, constructing an {@code SdlHostWindow} and dying six
      * seconds later on "No available video device", which names the wrong component entirely.
      *
+     * <p><b>every generation is in the range, and each adds to the one before it.</b> 1 implements
+     * the window selector. 2 also understands the audio flag. 3 also registers a host input source,
+     * which reads the contract 3 pad format. 4 reads the contract 4 pad format instead: one of four
+     * ports per read, and the whole of the emulator's pad state.
+     *
+     * <p><b>an older generation runs without what it lacks, and nothing reports it but the launch
+     * log.</b> a contract-1 payload does not know {@code SHARPEMU_HOST_AUDIO}, so it asks SDL for a
+     * device, SDL names four backends android does not have, and the port degrades to
+     * {@code backend=silent}: the game renders and makes no sound. a contract-2 payload does not know
+     * {@code SHARPEMU_HOST_INPUT}, so it registers no input source and its pad exports report a
+     * controller that is permanently connected and permanently neutral. the launch log names the
+     * generation that ran, which is where either is found.
+     *
+     * <p><b>the host layer answers the contract 3 pad format as well as the contract 4 one, and this
+     * range is what keeps it doing so</b>: that format and its rumble command are needed only while 3
+     * is in here.
+     *
      * <p>it is a courtesy and not a guarantee: a build that declares 1 and lies still dies inside
      * SDL. the real guarantee is knowing where a build came from, which is what the launch log is
      * for.
-     */
-    /**
-     * <p><b>2 means the payload understands the audio flag.</b> the bump is the first real
-     * exercise of this mechanism, and it is
-     * also the first time the range does not include every generation before it. the reason is
-     * what a contract-1 build now does: it does not know {@code SHARPEMU_HOST_AUDIO}, so it asks
-     * SDL for a device, SDL names four backends Android does not have, and the port degrades to
-     * {@code backend=silent}. the game renders perfectly and makes no sound, and nothing anywhere
-     * reports an error -- which is precisely the class of failure this check exists to turn into a
-     * refusal. "the emulator has no audio" is exactly the report a mismatched build generates.
-     *
-     * <p><b>3 means the payload registers a host input source, and the range includes 2 rather than
-     * excluding it.</b> a contract-2 payload does not know {@code SHARPEMU_HOST_INPUT}, so it registers
-     * nothing and its pad exports report a controller that is permanently connected and permanently
-     * neutral -- a game that ignores every button with nothing returning an error. that reads as
-     * identical to a contract-2 build in every other respect, which is the argument for refusing it.
-     *
-     * <p><b>4 means the payload reads the contract 4 pad format</b>: one of four ports per read, and
-     * the whole of the emulator's pad state. the host layer answers the contract 3 format as well, so
-     * 3 stays in the range, and it is the range that keeps the host layer answering it: the contract
-     * 3 format and its rumble command are needed only while 3 is in here.
      */
     static final int CONTRACT_MIN = 1;
     static final int CONTRACT_MAX = 4;

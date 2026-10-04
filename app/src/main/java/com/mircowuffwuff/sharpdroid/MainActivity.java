@@ -1513,7 +1513,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         env.put("SHARPEMU_HOST_WINDOW", "android");
         // and the third: without it the fork asks SDL for an audio device, SDL names four backends
         // android does not have, and the port degrades to backend=silent with nothing erroring.
-        // that is the failure hostContract 2 exists to refuse, so this and the contract move
+        // that is what a payload older than hostContract 2 does, so this and the contract move
         // together.
         env.put("SHARPEMU_HOST_AUDIO", "android");
         // and the fourth of the same family: without it the payload registers no input source at all,

@@ -2,7 +2,7 @@
 
 what a SharpEmu build is, what its `meta.json` says, and what a payload has to do to be launchable by this app.
 
-**this is the document a third-party build has to satisfy.** the app refuses a build it does not recognise, and the refusal is the point: every failure this format exists to prevent is a silent one. a payload that ignores `SHARPEMU_HOST_AUDIO` renders perfectly, makes no sound, and reports no error anywhere — which arrives as "the emulator has no audio" and names the wrong component entirely.
+**this is the document a third-party build has to satisfy.** the app refuses a build it does not recognise, and the refusal is the point: every failure this format exists to prevent is a silent or a misleading one. a pristine upstream build ignores `SHARPEMU_HOST_WINDOW`, constructs an SDL window and dies six seconds in on *"No available video device"*, which names the wrong component entirely.
 
 `scripts/package-build.py` produces builds and [`scripts.md`](scripts.md) documents how to drive it. nothing here requires that script: everything below is the format itself, and a build assembled by hand that holds to it is a build.
 
@@ -82,15 +82,22 @@ it is a **sortable integer** rather than an ISO string or an epoch second, delib
 
 ## `hostContract`
 
-**the launcher-to-payload interface generation**: which environment variables the payload is expected to understand, and which host window it must implement.
+**the launcher-to-payload interface generation**: which environment variables the payload is expected to understand, which host window it must implement, and which pad format it reads.
 
 the app declares a **range** rather than a single number — `CONTRACT_MIN` and `CONTRACT_MAX` in `SharpEmuBuild.java` — so bumping it does not silently invalidate every build a user has already imported. outside the range the launch is refused and both numbers are named in the log.
 
-**the range is 2..3.** generation 3 is a payload that also registers a host input source; generation 2 is one that implements the window and audio selectors alone. both run.
+**the range is 1..4, and every generation in it runs.** each adds to the one before it:
 
-**generation 2 is admitted where generation 1 is refused, and the difference is what a person can tell.** a generation-2 payload does not know `SHARPEMU_HOST_INPUT`, so it registers no input source and its pad exports report a controller that is permanently connected and permanently neutral — a game that ignores every button, with nothing returning an error. that is the same *shape* as the silent-audio failure below, and it is nonetheless allowed, because silent audio is indistinguishable from a scene that has no music while a controller that does nothing is obvious within seconds of a title screen. the launch log names the generation that ran either way.
+| generation | what the payload does |
+| --- | --- |
+| 1 | implements the window selector |
+| 2 | also implements the audio selector |
+| 3 | also registers a host input source, which reads [the contract 3 pad format](pad.md#the-formats-and-the-check-that-replaces-a-shared-layout) |
+| 4 | reads the contract 4 pad format instead: one of four ports per read, and the whole of the emulator's pad state |
 
-**generation 1 implements the window selector alone, and is refused rather than run.** the range does not extend down to it, and that is the deliberate part: a generation-1 payload does not know `SHARPEMU_HOST_AUDIO`, so it asks SDL for a device, SDL names four backends android does not have, and the port degrades to `backend=silent`. the game renders, makes no sound, and nothing anywhere reports an error. that is precisely the class of failure this check exists to turn into a refusal, so running such a build is worth less than refusing it.
+**an older generation runs without what it lacks, and nothing reports it but the launch log.** a generation-1 payload does not know `SHARPEMU_HOST_AUDIO`, so it asks SDL for a device, SDL names four backends android does not have, and the port degrades to `backend=silent`: the game renders and makes no sound, with no error anywhere. a generation-2 payload does not know `SHARPEMU_HOST_INPUT`, so it registers no input source and its pad exports report a controller that is permanently connected and permanently neutral. the launch log names the generation that ran, which is where either is found.
+
+**the host layer reads the contract 3 pad format as well as the contract 4 one, and this range is what keeps it doing so**: that format and its rumble command are needed only while 3 is in the range.
 
 **it is a courtesy and not a guarantee.** a build that declares 2 and lies still dies inside SDL. the real guarantee is knowing where a build came from, which is what the launch log is for — it prints the name, id, version, build number, contract and directory of whatever it resolved.
 
