@@ -113,7 +113,9 @@ three environment variables, all set by the launcher, all read by the payload at
 | `SHARPEMU_HOST_WINDOW_SIZE=WIDTHxHEIGHT` | report exactly that as the window's pixel size. **the host is the only thing that knows it** — it has the `ANativeWindow` and the guest process does not. a window whose size disagrees with the surface makes the vulkan presenter conclude the drawable was resized on every frame, so it recreates its swapchain forever and never renders, silently, with no call returning an error. a malformed value should be warned about and ignored, not thrown on |
 | `SHARPEMU_HOST_AUDIO=android` | open host audio through AAudio. SDL's linux build knows PipeWire, PulseAudio, JACK and ALSA; android runs none of the three sound servers and does not let an app open the kernel device, so `/dev/snd/pcmC0D0p` is `system:audio` and an app's uid is not in group `audio`. implement the full PCM seam rather than only stereo PCM16: the guest asks for 48000 Hz, 2 channels, float32, and `AAUDIO_FORMAT_PCM_FLOAT` is exactly that, so guest float32 passes through without a conversion |
 
-**a fourth variable is set by the launcher and asks nothing of the payload.** `DOTNET_EnableWriteXorExecute=0` is .NET's own, not SharpEmu's: without it the host layer's SMC tracker cannot see CoreCLR's JIT writes and a boot costs 65x. it is listed here so that nobody removes it on the grounds that no payload code reads it.
+**generations 3 and 4 add a fourth**, `SHARPEMU_HOST_INPUT=android`: register a host input source that polls the host layer's pad bridge, in the format [`pad.md`](pad.md) gives for the generation.
+
+**one more variable is set by the launcher and asks nothing of the payload.** `DOTNET_EnableWriteXorExecute=0` is .NET's own, not SharpEmu's: without it the host layer's SMC tracker cannot see CoreCLR's JIT writes and a boot costs 65x. it is listed here so that nobody removes it on the grounds that no payload code reads it.
 
 the payload is otherwise an ordinary linux-x64 publish. it is `ET_DYN` and links the system libc, and it runs as guest code under the host layer's own dynamic linker search path — the x86-64 shared objects staged alongside it, not a rootfs and not a container.
 
@@ -122,10 +124,10 @@ the payload is otherwise an ordinary linux-x64 publish. it is `ET_DYN` and links
 `env` is the **lowest-precedence** environment source there is. per launch, last wins:
 
 ```
-the build's own env  <  the launcher's five  <  the launch intent's extra guest environment
+the build's own env  <  the settings rows  <  the launcher's own  <  the launch intent's extra guest environment
 ```
 
-so a build **cannot** override `SHARPEMU_HOST_WINDOW`, `SHARPEMU_HOST_WINDOW_SIZE`, `SHARPEMU_HOST_AUDIO`, `DOTNET_EnableWriteXorExecute` or `SHARPEMU_SAVEDATA_DIR` by declaring them: the launcher writes those after the build's map. below all of it, the host layer's shell binary takes explicit `--env` on its own command line, which is a development path and not something the app reaches.
+the launcher's own are `DOTNET_EnableWriteXorExecute`, `SHARPEMU_HOST_WINDOW`, `SHARPEMU_HOST_AUDIO`, `SHARPEMU_HOST_INPUT`, `SHARPEMU_HOST_WINDOW_SIZE`, `SHARPEMU_SAVEDATA_DIR`, `SHARPEMU_VK_PIPELINE_CACHE_PATH`, `SHARPEMU_HOSTAPP_DIR` and `SHARPEMU_DEVLOG_APP_DIR`, plus `SHARPEMU_VK_PIPELINE_CACHE=0` while Disk shader cache is off. so neither a build nor a settings row **can** override any of them by declaring it: the launcher writes them after both maps. below all of it, the host layer's shell binary takes explicit `--env` on its own command line, which is a development path and not something the app reaches.
 
 it is a **map** and not a list of flags, so a variable a build defaults on and a launch overrides reaches the guest once, with the override's value. two `--env` arguments naming one variable would be a coin toss over which the guest reads.
 

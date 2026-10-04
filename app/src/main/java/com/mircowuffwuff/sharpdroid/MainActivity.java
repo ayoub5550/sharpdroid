@@ -1500,8 +1500,8 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         // the --vulkan-* family are properties of the host layer's correctness, and a payload able
         // to ask for --smc none is a payload able to break the thing running it.
         Map<String, String> env = new LinkedHashMap<>(buildEnv);
-        // the settings scene's contribution, between the build's defaults and the eight below. it is
-        // empty unless a row was actually touched.
+        // the settings scene's contribution, between the build's defaults and the launcher's own
+        // below. it is empty unless a row was actually touched.
         env.putAll(settingsEnv);
         // the first is load-bearing: without it the SMC tracker cannot see CoreCLR's JIT writes and
         // a boot costs 65x. a launch may override it with --es guestenv and nothing else can.
