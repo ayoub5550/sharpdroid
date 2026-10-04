@@ -75,6 +75,13 @@ run asyncsig-safepoint --asyncsig safepoint ./asyncsig
 run pause --pause-selftest ./pause
 run_fails pause-off "the guest passed with nothing pausing it, so it cannot tell a pause from none" ./pause
 
+# the pad bridge. no app pushes a pad into a shell binary, so every port reads as empty, and what the
+# guest checks is the formats: both answered, the contract 3 format whatever its port argument says,
+# and every malformed read and rumble refused. without --pad every read is refused and the guest must
+# fail, which is what says the first mode is the bridge answering.
+run pad --pad ./pad
+run_fails pad-off "the guest read pad state with the bridge not enabled" ./pad
+
 # the vulkan thunk. these need a working GPU and are the only guests here that depend on
 # anything outside the host layer, so a failure is worth reading before assuming a regression:
 # `vulkan` checks the marshalling and the stub table, `vkrender` checks that the driver actually

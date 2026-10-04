@@ -111,7 +111,7 @@ object PadRumble {
     }
 
     /**
-     * the host layer's entry point. resolved as `rumble(II)Z` at library load, so **the name and
+     * the host layer's entry point. resolved as `rumble(III)Z` at library load, so **the name and
      * signature are part of an interface** and cannot be changed on this side alone.
      *
      * **it returns whether the platform took the request, and the host counts only the trues.** a
@@ -119,13 +119,15 @@ object PadRumble {
      * the `VIBRATE` permission -- which throws here rather than at any earlier check -- was counted as
      * delivered. a counter that cannot distinguish those is worse than none.
      *
+     * @param port the port the guest asked about, 0 to 3. every port drives this device's own motor.
      * @param large the strong motor, 0..255. a single-actuator device is driven by this.
      * @param small the weak motor, 0..255, used only when there is nothing stronger asked for.
      * @return true when the platform accepted it; false when there is no vibrator, nothing was asked
      *   for, or the request was refused.
      */
     @JvmStatic
-    fun rumble(large: Int, small: Int): Boolean {
+    @Suppress("UNUSED_PARAMETER")
+    fun rumble(port: Int, large: Int, small: Int): Boolean {
         if (!enabled) {
             return false
         }

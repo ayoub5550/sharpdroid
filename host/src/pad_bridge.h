@@ -19,9 +19,9 @@
 // guest thread, so the trap costs about 34 µs per second of one core, roughly two thousandths of one
 // frame per second at 60 fps. what the trap buys for that is three things the page cannot:
 //
-//   - **no structure layout shared between two repositories.** the wire format below is checked by
-//     the call itself -- a version and a byte count go in, and a mismatch is refused and said out
-//     loud. a mirrored struct is checked by nobody and yields plausible wrong values.
+//   - **no structure layout shared between two repositories.** the wire formats below are checked by
+//     the call itself -- a format number and a byte count go in, and a mismatch is refused and said
+//     out loud. a mirrored struct is checked by nobody and yields plausible wrong values.
 //   - **rumble.** that direction is guest to host, which is what this already is. a page needs a
 //     second mechanism invented for it, plus something polling the page to notice.
 //   - **the guest never receives a host address to dereference.** a stale one is a segfault inside
@@ -40,6 +40,7 @@
 #include <FEXCore/Core/CoreState.h>
 #include <FEXCore/HLE/SyscallHandler.h>
 
+#include <cstddef>
 #include <cstdint>
 
 typedef struct _JavaVM JavaVM;
@@ -57,25 +58,82 @@ inline bool IsThunkCall(uint64_t SyscallNumber) {
   return (SyscallNumber & MagicMask) == Magic;
 }
 
-// the two commands. read is a poll and rumble is a request; nothing else crosses.
+// the commands. a read is a poll and a rumble is a request; nothing else crosses.
+//
+// **the two rumbles are one request with and without a port.** Command_Rumble is the one a payload
+// of contract generation 3 sends, which names no port because those payloads read a single pad; it
+// is port 1's rumble, and it is answered by passing port index 0 to exactly what Command_RumblePort
+// does. it is needed only while the app's contract range includes 3.
 enum Command : uint32_t {
   Command_Read = 0,
   Command_Rumble = 1,
+  Command_RumblePort = 2,
   CommandCount,
 };
 
-// **the wire format, and the only place it is written down.** the guest passes this version and the
-// byte count it expects; a mismatch on either is refused rather than read, because the two sides of
-// this are in different repositories with different release cadences and no compiler ever sees both.
-// that check is the whole reason a trap was chosen over shared memory, so it is not optional.
-//
-// bump the version when a field's meaning changes. appending a field changes the size and is caught
-// by the size check on its own.
-inline constexpr uint32_t WireVersion = 1;
+// **four ports, numbered from 0 here and from 1 on screen.** port index 0 is what the app calls
+// Controller port 1.
+inline constexpr uint32_t PortCount = 4;
 
-// sticks are 0..255 with 128 centred and Y growing downward, and triggers are 0..255. that is the
-// seam the fork's own gamepad snapshot already uses, so nothing is converted on either side of this.
-struct WireState {
+// --- the formats ---------------------------------------------------------------------------------
+//
+// **the wire formats, and the only place they are written down.** a read names the format it expects
+// and the byte count it has room for, and a mismatch on either is refused rather than written,
+// because the two sides of this are in different repositories with different release cadences and no
+// compiler ever sees both. that check is the whole reason a trap was chosen over shared memory, so it
+// is not optional.
+//
+// **a format is named after the hostContract generation that introduced it**: the contract 3 format
+// and the contract 4 format. a payload declaring a later generation that leaves the pad alone keeps
+// reading the contract 4 format. the number a read sends is that generation, except for the contract
+// 3 format -- see its row in pad_bridge.cpp, which is the only place the two differ.
+//
+// sticks are 0..255 with 128 centred and Y growing downward, and triggers are 0..255, in both. that
+// is the seam the fork's own gamepad snapshot already uses, so nothing is converted on either side.
+
+// one touch on the touchpad. X and Y run 0..1 from the top left corner.
+struct TouchPoint {
+  uint8_t Active;
+  uint8_t Id;
+  uint8_t Reserved[2];
+  float X;
+  float Y;
+};
+static_assert(sizeof(TouchPoint) == 12, "a touch point is part of the contract 4 format");
+
+// **the contract 4 format: one port's whole pad, field for field the emulator's own pad state**
+// (`HostGamepadState` in the fork), so that nothing a payload can be told about a pad is missing from
+// it. it is also the state the host layer holds -- one of these per port, and nothing else -- and
+// every format is written from it.
+//
+// Type and Connection carry the emulator's own enumerations: a generic pad, a DualShock 4 or a
+// DualSense; unknown, wired or wireless. BatteryPercent is 0 when nothing knows it. motion is in the
+// emulator's units, m/s² and rad/s, on the axes its `HostMotionState` names, and is meaningful only
+// while MotionAvailable is set.
+struct PortState {
+  uint32_t Buttons;
+  uint8_t LeftX;
+  uint8_t LeftY;
+  uint8_t RightX;
+  uint8_t RightY;
+  uint8_t LeftTrigger;
+  uint8_t RightTrigger;
+  uint8_t Connected;
+  uint8_t Type;
+  uint8_t Connection;
+  uint8_t BatteryPercent;
+  uint8_t MotionAvailable;
+  uint8_t Reserved;
+  float Acceleration[3];
+  float AngularVelocity[3];
+  TouchPoint Touch[2];
+};
+static_assert(sizeof(PortState) == 64, "the contract 4 format is a fixed 64 bytes and the guest checks it");
+static_assert(offsetof(PortState, Acceleration) == 16 && offsetof(PortState, Touch) == 40,
+              "the contract 4 format's layout is part of the contract");
+
+// **the contract 3 format: port 1's buttons, sticks and triggers, and nothing else.**
+struct Contract3State {
   uint32_t Buttons;
   uint8_t LeftX;
   uint8_t LeftY;
@@ -86,7 +144,7 @@ struct WireState {
   uint8_t Connected;
   uint8_t Reserved;
 };
-static_assert(sizeof(WireState) == 12, "the wire format is a fixed 12 bytes and the guest checks it");
+static_assert(sizeof(Contract3State) == 12, "the contract 3 format is a fixed 12 bytes and the guest checks it");
 
 // enabled by --pad, in the shape --vulkan and --audio have. off by default, so a run that does not
 // ask for it is the argument vector every earlier measurement was taken on and none of them stops
@@ -95,14 +153,16 @@ void SetEnabled(bool Enabled);
 bool Enabled();
 void SetTrace(bool Enabled);
 
-// **--pad-selftest: request one rumble the moment the guest first polls, so that the delivery path can
-// be shown to work on a title that never asks for one.**
+// **--pad-selftest: when the guest first polls, request one rumble on each of the four ports in turn,
+// so that the delivery path can be shown to work on a title that never asks for one.**
 //
 // it exists because the two directions here fail independently and only one of them is exercised by
 // an ordinary run. a game that polls the pad proves the read path every frame; rumble is proven by
 // nothing at all unless the game happens to vibrate, and "it compiles" is not evidence. this fires
 // the real path -- the guest's own trap is the only link it substitutes for, and that link is the same
-// call the proven read makes.
+// call the proven read makes. **one port at a time**, each named in the log, with a pause between, so
+// that a person holding several controllers can tell which port buzzed -- and every port rather than
+// only those with a pad, because at the first poll the app may not have reported its pads yet.
 //
 // off by default, and tied to the first read rather than to a timer: a fixed delay would fire during
 // a boot whose length varies, and a rumble nobody was watching for is worth nothing.
@@ -114,10 +174,25 @@ void SetSelfTest(bool Enabled);
 // bridge that answers reads with "no pad" -- which is honest rather than a failure.
 void OnLoad(JavaVM* VM);
 
-// the app's push, off a KeyEvent or a MotionEvent. the latest wins and nothing is queued: a poll
-// wants the current position of a stick, and a backlog of stick positions is a backlog of wrong
-// answers. connected false is what a pad going away looks like.
-void SetState(const WireState& State);
+// what the app pushes for one port off a KeyEvent or a MotionEvent: the part of PortState a
+// controller's buttons and sticks produce.
+struct Controls {
+  uint32_t Buttons;
+  uint8_t LeftX;
+  uint8_t LeftY;
+  uint8_t RightX;
+  uint8_t RightY;
+  uint8_t LeftTrigger;
+  uint8_t RightTrigger;
+  bool Connected;
+};
+
+// the app's push for one port. the latest wins and nothing is queued: a poll wants the current
+// position of a stick, and a backlog of stick positions is a backlog of wrong answers. connected
+// false is what a pad going away looks like. **it writes only these fields of the port**, so motion
+// and touch, which come from sources of their own, are left as they were. a port index outside the
+// four is ignored and said once.
+void SetControls(uint32_t Port, const Controls& Pad);
 
 // the dispatch entry, called from LinuxSyscallHandler::Dispatch for any magic number.
 uint64_t Handle(FEXCore::Core::CpuStateFrame* Frame, FEXCore::HLE::SyscallArguments* Args);

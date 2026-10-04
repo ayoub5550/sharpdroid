@@ -330,7 +330,8 @@ object PadState {
      * costs nothing and a push that is skipped is a control the guest never learns about.
      */
     private fun push() {
+        // every controller is merged into one pad, and that pad is Controller port 1.
         HostLayer.nativeSetPadState(
-            buttons, leftX, leftY, rightX, rightY, leftTrigger, rightTrigger, connected)
+            0, buttons, leftX, leftY, rightX, rightY, leftTrigger, rightTrigger, connected)
     }
 }

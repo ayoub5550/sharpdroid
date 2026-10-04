@@ -168,27 +168,27 @@ JNIEXPORT jlong JNICALL Java_com_mircowuffwuff_sharpdroid_HostLayer_nativePresen
   return static_cast<jlong>(HostLayer::VulkanThunk::PresentedFrameCount());
 }
 
-// the app's pad state, pushed from wherever it reads a KeyEvent or a MotionEvent. scalars rather than
-// a structure on purpose: the guest checks a version and a byte count for the one layout that does
-// cross, and adding a second layout across the JNI boundary as well would be a second thing to keep
-// in step for no gain.
+// one port's pad, pushed from wherever the app reads a KeyEvent or a MotionEvent. scalars rather than
+// a structure on purpose: the guest checks a format and a byte count for the layouts that do cross,
+// and adding another layout across the JNI boundary as well would be one more thing to keep in step
+// for no gain.
 //
-// **cheap enough to call on every event.** it takes one uncontended lock and copies twelve bytes; the
+// **cheap enough to call on every event.** it takes one uncontended lock and copies a dozen bytes; the
 // guest's poll takes the same lock. nothing here allocates, throws or blocks, which is what lets it be
 // called straight from the input dispatch on the UI thread.
 JNIEXPORT void JNICALL Java_com_mircowuffwuff_sharpdroid_HostLayer_nativeSetPadState(
-  JNIEnv*, jclass, jint Buttons, jint LeftX, jint LeftY, jint RightX, jint RightY, jint LeftTrigger,
-  jint RightTrigger, jboolean Connected) {
-  HostLayer::PadBridge::WireState State {};
-  State.Buttons = static_cast<uint32_t>(Buttons);
-  State.LeftX = static_cast<uint8_t>(LeftX);
-  State.LeftY = static_cast<uint8_t>(LeftY);
-  State.RightX = static_cast<uint8_t>(RightX);
-  State.RightY = static_cast<uint8_t>(RightY);
-  State.LeftTrigger = static_cast<uint8_t>(LeftTrigger);
-  State.RightTrigger = static_cast<uint8_t>(RightTrigger);
-  State.Connected = Connected ? 1 : 0;
-  HostLayer::PadBridge::SetState(State);
+  JNIEnv*, jclass, jint Port, jint Buttons, jint LeftX, jint LeftY, jint RightX, jint RightY,
+  jint LeftTrigger, jint RightTrigger, jboolean Connected) {
+  HostLayer::PadBridge::Controls Pad {};
+  Pad.Buttons = static_cast<uint32_t>(Buttons);
+  Pad.LeftX = static_cast<uint8_t>(LeftX);
+  Pad.LeftY = static_cast<uint8_t>(LeftY);
+  Pad.RightX = static_cast<uint8_t>(RightX);
+  Pad.RightY = static_cast<uint8_t>(RightY);
+  Pad.LeftTrigger = static_cast<uint8_t>(LeftTrigger);
+  Pad.RightTrigger = static_cast<uint8_t>(RightTrigger);
+  Pad.Connected = Connected;
+  HostLayer::PadBridge::SetControls(static_cast<uint32_t>(Port), Pad);
 }
 
 // whether the GPU driver the app chose is the one this process would render through, asked *before*

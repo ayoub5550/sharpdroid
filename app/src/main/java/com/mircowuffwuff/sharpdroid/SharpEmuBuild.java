@@ -67,9 +67,14 @@ public final class SharpEmuBuild {
      * nothing and its pad exports report a controller that is permanently connected and permanently
      * neutral -- a game that ignores every button with nothing returning an error. that reads as
      * identical to a contract-2 build in every other respect, which is the argument for refusing it.
+     *
+     * <p><b>4 means the payload reads the contract 4 pad format</b>: one of four ports per read, and
+     * the whole of the emulator's pad state. the host layer answers the contract 3 format as well, so
+     * 3 stays in the range, and it is the range that keeps the host layer answering it: the contract
+     * 3 format and its rumble command are needed only while 3 is in here.
      */
     static final int CONTRACT_MIN = 1;
-    static final int CONTRACT_MAX = 3;
+    static final int CONTRACT_MAX = 4;
 
     /**
      * the one build that ships inside the APK, by the folder it extracts to.

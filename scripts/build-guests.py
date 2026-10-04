@@ -46,6 +46,8 @@ _GUESTS = [
      _FREESTANDING, None),
     ("pause", "is paused from outside, and checks from inside that its clock and its spinning "
      "thread both stopped", _FREESTANDING, None),
+    ("pad", "reads every pad format the host layer answers, and checks what it is refused",
+     _FREESTANDING, None),
     ("vulkan", "623 entry points resolved by the guest's own ld.so before it starts",
      _DYNAMIC, "vulkan"),
     ("vkrender", "the one that makes the GPU run something", _DYNAMIC, "vulkan"),

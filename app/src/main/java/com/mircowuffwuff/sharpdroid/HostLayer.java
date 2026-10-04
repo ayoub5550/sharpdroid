@@ -52,22 +52,24 @@ public final class HostLayer {
     public static native long nativePresentedFrames();
 
     /**
-     * the current state of the gamepad, pushed down whenever any control on it moves.
+     * the current state of one port's gamepad, pushed down whenever any control on it moves.
      *
      * <p>the guest polls for this rather than being handed it, because a host thread calling into the
      * guest would have to enter translated code -- the one direction every seam here refuses. so the
-     * native side keeps the latest and answers a guest that asks.
+     * native side keeps the latest for each port and answers a guest that asks.
      *
-     * <p><b>scalars rather than a structure, deliberately.</b> one layout does have to cross this
-     * boundary -- the guest's own poll -- and it is versioned and size-checked by the call that carries
-     * it. a second layout here would be a second thing to keep in step for nothing.
+     * <p><b>scalars rather than a structure, deliberately.</b> the layouts that do have to cross a
+     * boundary -- the guest's own poll -- are named and size-checked by the call that carries them.
+     * another layout here would be one more thing to keep in step for nothing.
      *
-     * <p>cheap enough for the input dispatch: it takes one uncontended lock and copies twelve bytes,
+     * <p>cheap enough for the input dispatch: it takes one uncontended lock and copies a dozen bytes,
      * and it neither allocates nor blocks. sticks are 0..255 with 128 centred and Y growing downward;
      * triggers are 0..255. see {@code PadState}, which is the only caller.
+     *
+     * @param port the port index, 0 to 3. index 0 is Controller port 1.
      */
     public static native void nativeSetPadState(
-            int buttons, int leftX, int leftY, int rightX, int rightY, int leftTrigger,
+            int port, int buttons, int leftX, int leftY, int rightX, int rightY, int leftTrigger,
             int rightTrigger, boolean connected);
 
     /**
