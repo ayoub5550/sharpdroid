@@ -1,10 +1,10 @@
 # the app
 
-the APK: eleven activities. `GameListActivity` is what the launcher icon opens and lists the games on the device; `SettingsActivity` and `SettingsSectionActivity` are the settings scene behind its cog, with `BuildsActivity` the build manager, `DriversActivity` the GPU driver manager, `FoldersActivity` the game folder manager, `UserDataActivity` the user data screen and `AboutActivity` the credits page behind five of its cards, and `LicensesActivity` and `LicenseTextActivity` behind that last one; `MainActivity` holds a `SurfaceView` with a guest running underneath it — it gets a window from android, hands it down, chooses a build and a driver, assembles an argument vector and calls into the host layer, which blocks until the guest is done. it is the one activity in a **process of its own**, given to one run and ended with it.
+the APK: thirteen activities. `GameListActivity` is what the launcher icon opens and lists the games on the device; `SettingsActivity` and `SettingsSectionActivity` are the settings scene behind its cog, with `BuildsActivity` the build manager, `DriversActivity` the GPU driver manager, `FoldersActivity` the game folder manager and `UserDataActivity` the user data screen behind its rows and cards, `AboutActivity` the credits page behind its corner button, and `LicensesActivity` and `LicenseTextActivity` behind that; `GameSettingsActivity` is one game's settings, opened by holding its cover, with `GameUserDataActivity` that game's user data behind one of its cards; `MainActivity` holds a `SurfaceView` with a guest running underneath it — it gets a window from android, hands it down, chooses a build and a driver, assembles an argument vector and calls into the host layer, which blocks until the guest is done. it is the one activity in a **process of its own**, given to one run and ended with it.
 
-**it is an early frontend.** there is a game list, a tap to run one, a settings scene with a handful of rows in it, and a build manager, a driver manager and a game folder manager behind three of them, and a run is paused and left through the panel the back button opens over it: no per-game menu. most of what a run does is still a launch extra with a compiled-in default, and a run started by an intent reaches the same activity the list does. everything below describes it as it is rather than as something on the way somewhere.
+**it is an early frontend.** there is a game list, a tap to run one, a settings scene of six sections with a build manager, a driver manager, a game folder manager and the user data screen among them, one game's own settings behind a held cover, and a run is paused and left through the panel the back button opens over it. most of what a run does is still a launch extra with a compiled-in default, and a run started by an intent reaches the same activity the list does. everything below describes it as it is rather than as something on the way somewhere.
 
-`app/src/main/AndroidManifest.xml`, a small `res/` tree, four java files and forty-six kotlin files are all of it, with `host/src/entry_jni.cpp` on the other side of the JNI boundary — and, since a game can come from a grant rather than a path, `GuestFiles.kt` on the *other* side of it, called from the host layer rather than into it. [`host-layer.md`](host-layer.md) describes everything below `RunMain`; [`guest-files.md`](guest-files.md) describes that callback and what it costs; [`build-format.md`](build-format.md) describes what the app installs and launches; [`repo-structure.md`](repo-structure.md) says where the APK is built and under which application id, and [`scripts.md`](scripts.md) says how to drive any of it.
+`app/src/main/AndroidManifest.xml`, a small `res/` tree, four java files and sixty-one kotlin files are all of it, with `host/src/entry_jni.cpp` on the other side of the JNI boundary — and, since a game can come from a grant rather than a path, `GuestFiles.kt` on the *other* side of it, called from the host layer rather than into it. [`host-layer.md`](host-layer.md) describes everything below `RunMain`; [`guest-files.md`](guest-files.md) describes that callback and what it costs; [`build-format.md`](build-format.md) describes what the app installs and launches; [`repo-structure.md`](repo-structure.md) says where the APK is built and under which application id, and [`scripts.md`](scripts.md) says how to drive any of it.
 
 ## three invariants
 
@@ -29,14 +29,14 @@ the APK: eleven activities. `GameListActivity` is what the launcher icon opens a
 | | |
 | --- | --- |
 | API | `minSdk` 28, `targetSdk` 35, `compileSdk` 35 — in `app/build.gradle.kts`, not the manifest |
-| the activities | eleven. `GameListActivity` carries the `MAIN`/`LAUNCHER` filter; `MainActivity` is exported with no filter at all, so `am start -n` reaches it and nothing resolves it implicitly; the two settings activities and everything behind them are not exported, since they are reached from the cog and from nowhere else |
+| the activities | thirteen. `GameListActivity` carries the `MAIN`/`LAUNCHER` filter; `MainActivity` is exported with no filter at all, so `am start -n` reaches it and nothing resolves it implicitly; the two settings activities and everything behind them are not exported, since they are reached from the cog and from nowhere else |
 | processes | two. `MainActivity` declares `android:process=":guest"` and every other activity is in the app's own — see [the guest's own process](#the-guests-own-process) |
 | the service | one, `GuestService`, also in `:guest`: the foreground service a game holds while it is up on android 13 and later, of type `specialUse`, showing nothing — see [pausing](#pausing) |
 | orientation | `MainActivity` is **locked landscape**, and its `configChanges` claims orientation, screen size, layout, density and UI mode so it is never recreated under a running guest. the game list is unconstrained |
 | theme | `Theme.SharpDroid` on the application, Material3 following the platform between light and dark. it is what an activity wears for the moment before `Theme.kt` sets the chosen one and is not itself offered in the list. every palette is set per activity before `setContentView`, since a theme is resolved while a view hierarchy is inflated. `MainActivity` overrides all of it back to `Theme.Black.NoTitleBar.Fullscreen`, because its window is a surface a guest renders into |
 | `extractNativeLibs` | **on**, for two independent reasons — as `packaging { jniLibs { useLegacyPackaging } }` |
 | `debuggable` | true, and it comes from the debug build type. hardcoding it in the manifest is a lint error |
-| permissions | `MANAGE_EXTERNAL_STORAGE`, and **declaring it is not holding it** — it is granted in the platform's own settings and nowhere else. an opt-in, described under the game list below and switched on from Settings -> Data. `VIBRATE` for rumble, and `FOREGROUND_SERVICE` and `FOREGROUND_SERVICE_SPECIAL_USE` for the service above, all three granted at install. **`POST_NOTIFICATIONS` is deliberately not declared** — see [pausing](#pausing). nothing else: a library needs a folder grant rather than a permission, and audio plays rather than records |
+| permissions | `MANAGE_EXTERNAL_STORAGE`, and **declaring it is not holding it** — it is granted in the platform's own settings and nowhere else. an opt-in, described under the game list below and switched on from Settings -> Game files. `VIBRATE` for rumble, and `FOREGROUND_SERVICE` and `FOREGROUND_SERVICE_SPECIAL_USE` for the service above, all three granted at install. **`POST_NOTIFICATIONS` is deliberately not declared** — see [pausing](#pausing). nothing else: a library needs a folder grant rather than a permission, and audio plays rather than records |
 
 **`MainActivity` is exported although it is not the launcher activity, and that is load-bearing.** every script in this repository launches a guest with `am start -n <application id>/com.mircowuffwuff.sharpdroid.MainActivity`, which is where a run gets its build, its driver and its diagnostic flags named per launch. keeping that path independent of the list is also what makes the list falsifiable: a game that boots by intent and not by tap says which of the two is at fault.
 
@@ -87,7 +87,7 @@ the APK carries the dex files, the host layer's `.so`, `libc++_shared.so` and th
 
 ### the folders the user granted
 
-**`FoldersActivity`, reached from Settings -> Data -> Game folders, is where a folder arrives and where one goes.** it is the build and driver managers' screen with folders in it — a toolbar over a list, an add button floating at the bottom right, one destructive action per row — because a third list of things that looked different would be a third thing to learn. removing is deliberately reachable rather than deferred, since a folder picked by mistake would otherwise be undoable only by clearing the app's data. **a row is a granted folder and not a game**: how many games are inside one is the game list's question, which it answers by scanning.
+**`FoldersActivity`, reached from Settings -> Game files -> Game folders, is where a folder arrives and where one goes.** it is the build and driver managers' screen with folders in it — a toolbar over a list, an add button floating at the bottom right, one destructive action per row — because a third list of things that looked different would be a third thing to learn. removing is deliberately reachable rather than deferred, since a folder picked by mistake would otherwise be undoable only by clearing the app's data. **a row is a granted folder and not a game**: how many games are inside one is the game list's question, which it answers by scanning.
 
 **the game list's toolbar carries only the cog**, and the one other way to the picker is the button on its **empty state**. that is a duplicated picker and deliberately not a duplicated rule: with no games yet, a person wants to point at their library rather than visit a manager that is also empty and press a second button — so the empty state opens the picker directly, and both callers go through `GameLibrary.add` for the decision and `GameLibrary.message` for the wording, so a folder that is itself a game is refused in the same words either way.
 
@@ -119,7 +119,7 @@ what it changes is one thing, and only for a game inside a folder the user alrea
 
 | | |
 | --- | --- |
-| the toggle | a switch in Settings -> Data showing the state. tapping the row opens the platform's own per-app screen, which is where the permission is both given and taken back |
+| the toggle | a switch in Settings -> Game files showing the state. tapping the row opens the platform's own per-app screen, which is where the permission is both given and taken back |
 | below API 30 | the row is hidden. the permission does not exist there, and the provider is what it is for |
 | when it is read | **at every launch and at every return to the screen**, never remembered. it can be revoked from the platform's settings while the app is running |
 | the path | derived from the document id — `<volume>:<relative>`, where `primary` is the device's own external storage and anything else is `/storage/<volume id>` |
@@ -135,19 +135,20 @@ the cog on the game list opens `SettingsActivity`, a grid of section buttons car
 
 **the section buttons are one column upright and two on a wide screen**, which is Eden's layout and worth the qualifier: a button is a title and one line, so a single column in landscape wastes two thirds of the width. the count is `values/integers.xml` against `values-land/`, resolved by android rather than measured by us, and an activity is recreated across a rotation so it is re-read with nothing watching for one. **a card in a grid cell must be `wrap_content` tall** — `match_parent` there means the height of the whole list, not of the row, and two buttons then fill the screen.
 
-a subsection is a label above a run of rows rather than another button press. a row that is only meaningful on this platform carries a small android beside its title.
+a subsection is a label above a run of rows rather than another button press.
 
 | section | rows |
 | --- | --- |
 | App | Theme, Theme color while Custom is chosen, Fullscreen mode, Estimate loading progress, Resume games on return |
 | Emulation | under a SharpEmu label, SharpEmu build; under a FEXCore label, JIT accuracy and Probe host instructions |
-| Graphics | Internal resolution, and under a Vulkan label, Custom driver and Disk shader cache |
+| Graphics | Internal resolution, and under a Vulkan label, Graphics driver and Disk shader cache |
 | Controls | Controller vibration, Automatic controller mapping, and under a Controller ports label, Port 1 to Port 4, each opening that port's bindings and motors. a game's own Controls screen draws Controller vibration alone, the mapping being the app's |
 | Game files | Game folders, and All files access where the platform has it |
 | User data | none. the card opens `UserDataActivity` |
-| About | none. the card opens `AboutActivity` |
 
-**two of the seven cards open a screen rather than a list of rows**, and the enum carries that as a class rather than the scene carrying a special case. User data is a manager screen and About is a page; neither is a set of settings, and a list holding one row that opened the real thing would be a screen nobody wanted to be on.
+**one of the six cards opens a screen rather than a list of rows**, and the enum carries that as a class rather than the scene carrying a special case. User data is a manager screen rather than a set of settings, and a list holding one row that opened the real thing would be a screen nobody wanted to be on.
+
+**About is not a card at all but the toolbar's corner button**, because nothing behind it is a setting: it is the one thing reachable from this scene that does not change what a launch does, and a card for it in a grid of cards that do is a card read past. it opens `AboutActivity`.
 
 **the Controls rows are the only ones that reach neither an argument vector nor the guest environment.** every other row here becomes something on the payload's command line or in its environment; these are read by the process that runs the guest and change what the app does with events it receives and with a request it is handed. [`pad.md`](pad.md) owns what they govern, and the port screens behind them.
 
@@ -185,13 +186,13 @@ the field is built once per size into a small bitmap and scaled — every pixel 
 
 **one row is a switch this app cannot flip.** all-files access is granted in android's own settings and nowhere else, so the row shows the state and a tap opens that screen; it is read back on the way in, never remembered. a switch rather than a description beginning "Off." because a switch is what the thing is.
 
-**and two rows are a count and a place to go.** SharpEmu build, Custom driver and Game folders each open a screen rather than holding a value, and each says underneath itself what is behind it — the chosen build, the chosen package, and how many folders are granted. the folder row's count is read on the main thread, which is the one `SharedPreferences` line cross-checked against the grants android holds; the screen behind it does the same read on a worker, where it is followed by drawing a list rather than a number.
+**and three rows are a place to go.** SharpEmu build, Graphics driver and Game folders each open a screen rather than holding a value, and each says underneath itself what is behind it — the chosen build, the chosen package, and how many folders are granted. the folder row's count is read on the main thread, which is the one `SharedPreferences` line cross-checked against the grants android holds; the screen behind it does the same read on a worker, where it is followed by drawing a list rather than a number.
 
 ## one game's settings
 
 holding a cover on the game list opens `GameSettingsActivity`: the dump's artwork on one side and Emulation, Graphics and Controls as cards on the other. **the game's name is the screen's title and sits in the toolbar**, which is where every other screen's title is; under the artwork it competed with the lines below it for which one was the heading. what is under the artwork is two facts about the dump — its title id, and the content version out of `param.json`, which is the release the dump *is* rather than any of the four other version fields beside it. they are left aligned, because a column of values centred on itself has no edge to read down, and each is taken away rather than left blank when the dump does not carry it. **the artwork is drawn as a square, and cut with the same corner radius as every card in the app.** the square is the point rather than a side effect: the clip is the *view's*, so an image letterboxed inside a box of another shape keeps its own square corners within the rounded one and nothing appears to have been rounded at all. upright the box is a fixed square; on a wide panel it is a ratio, since the column it sits in is neither square nor a fixed size. **filling a mis-shaped box by cropping is the other way to put the corner on the picture, and it is the wrong one** — it would quietly take a slice off any dump whose icon is not square, paying with somebody's artwork for a corner that a correctly shaped box gets for nothing. **the sections behind those cards are the ones above, not copies of them** — `SettingsSectionActivity` takes the game as an extra, opens that game's store instead of the app's, and is otherwise the same screen. so a row added to any of the three is offered per game the day it is written, which is the property the whole arrangement exists to have. the card is `SectionAdapter` in both scenes for the same reason.
 
-**App, Game files and About have no per-game flavour.** a theme, a folder grant and a version number belong to the install rather than to a title, and each of those sections answers with nothing when it is named a game — so a hand-written intent reaches an empty list rather than a screen offering to set something that can only be set once. **Controls keeps one row of its own for a game, Controller vibration**: automatic controller mapping is set up for the controllers a person owns rather than for a title, so it is not drawn there, and the launch reads it from the app's store.
+**App and Game files have no per-game flavour.** a theme and a folder grant belong to the install rather than to a title, and each of those sections answers with nothing when it is named a game — so a hand-written intent reaches an empty list rather than a screen offering to set something that can only be set once. **Controls keeps one row of its own for a game, Controller vibration**: automatic controller mapping is set up for the controllers a person owns rather than for a title, so it is not drawn there, and the launch reads it from the app's store.
 
 **the composition is the game on the left third and its settings on the right two thirds where the panel is wider than it is tall**, and the same two blocks stacked where it is not: a cover drawn at a third of a wide screen is most of the height of a tall one, and every card would start below the fold. the split is weights rather than a measurement, so it holds at any width.
 
@@ -315,6 +316,12 @@ all of them are read in `onCreate`, because the intent is not readable from a wo
 | `--es safgame <name>` | a directory inside a **granted tree** instead of a staged one, which mounts the guest file layer and hands the guest an invented path. absent, the game is a path and no interception is registered at all | absent |
 | `--es saftree <uri>` | which granted tree that directory is in, checked against the grants the app actually holds. the game list sends it because it knows which folder the row came from; absent, the first persisted read grant is used — exact with one granted folder, arbitrary with two | absent |
 | `--ez strict true` | `--strict` on the **payload's** own command line, which fails a launch on an unresolved import instead of continuing without it. everything after the payload path is the guest's command line, which the host layer passes through without reading | the stored setting, or absent |
+| `--es fex A=1,B=2` | comma-separated FEXCore options by their own names, one `--fex` each, **after** the preset's and the rows', so a launch measuring one knob overrides both. the host layer refuses a name FEXCore's table does not have | none |
+| `--ez hostprobe false` | `--host-features minimal` instead of the probed host feature set | the stored setting, or on |
+| `--ez shadercache true` | the vulkan pipeline cache on disk. off is `SHARPEMU_VK_PIPELINE_CACHE=0` in the guest environment | the stored setting, or off |
+| `--ez tracepad true` | `--trace-pad`, and every port the controller mapping pushes — [`pad.md`](pad.md) | off |
+| `--ez padselftest true` | `--pad-selftest`, one full-strength rumble on each port in turn at the first poll — [`pad.md`](pad.md) | off |
+| `--ez logtids true` | `--log-tids`, which widens the guest's log stamps to name the host thread that wrote each line | off |
 
 **the intent's own data names a game as well, and it is the form another application uses.** a tree uri on `Intent.setData` names the dump's directory or its `eboot.bin`, and it wins over `game` when both are there. it has to be a *tree* uri: a dump is a directory whose `sce_sys/param.json` decides which settings a run merges, and a single-document uri cannot reach it.
 
@@ -351,13 +358,17 @@ the store is a `SharedPreferences` line and the state is `contains(key)`. nothin
 | Theme | the app's own screens. never reaches the guest and never reaches the argument vector |
 | Theme color | likewise — one seed colour, and Material generates the scheme from it |
 | Fullscreen mode | the app's own screens, likewise. a guest's window is fullscreen either way |
+| Estimate loading progress | the loading screen, read once at launch. never the argument vector — the boot's checkpoints are timed either way |
 | Resume games on return | the process that runs the guest, read once at launch and acted on when the app is left and come back to. never the argument vector |
 | Game folders | nothing on a vector either — it is a screen, and what it edits is which trees the game list scans |
 | All files access | nothing this app stores — it is android's permission, and the row shows it |
 | SharpEmu build | which build a launch that named none runs — a folder name, which is a concrete build identity |
 | Internal resolution | `SHARPEMU_RENDER_SCALE` in the guest environment |
-| Custom driver | `--vulkan-driver` and `--vulkan-hooks`, or neither — a folder name, or the reserved word for the system driver |
+| Graphics driver | `--vulkan-driver` and `--vulkan-hooks`, or neither — a folder name, or the reserved word for the system driver |
+| Disk shader cache | off is `SHARPEMU_VK_PIPELINE_CACHE=0` in the guest environment, and off is also what an untouched row gives — the one row whose default is not the payload's |
 | JIT accuracy | one `--fex Name=Value` per knob the chosen rung names, then one per knob overridden on it, on the **host layer's** command line |
+| Probe host instructions | off is `--host-features minimal` on the host layer's command line; on contributes nothing |
+| Controller vibration, Automatic controller mapping, the controller ports | the process that runs the guest, read once at launch. never the argument vector — [`pad.md`](pad.md) |
 
 ### JIT accuracy
 
@@ -555,7 +566,7 @@ that volume is `noexec` and **it does not matter**, which is a property of the h
 
 ## the driver manager
 
-**Settings -> Graphics -> Custom driver** is the list of GPU driver packages on the device. what a row contains is Eden's driver manager — a radio, the name, the version, the description, badges and a trash can — and there is no *Fetch* button, because there is no index to fetch from and a driver arrives as a zip.
+**Settings -> Graphics -> Graphics driver** is the list of GPU driver packages on the device. what a row contains is Eden's driver manager — a radio, the name, the version, the description, badges and a trash can — and there is no *Fetch* button, because there is no index to fetch from and a driver arrives as a zip.
 
 **it is a grid of cards rather than a list of rows**, which is the settings scene's own shape: the same rounded rectangle, the same `colorSurfaceContainer` fill and outline, the same one column upright and two on a wide screen from `values/integers.xml`, with the radio sitting where a section button carries its icon. a driver is picked by reading a handful of alternatives against each other, which is what a grid is for; a build list is scanned down a column for the newest of an id, which is what a list is for. the two screens are deliberately not the same shape for that reason.
 
@@ -619,13 +630,13 @@ the app then passes `--vulkan-driver` and `--vulkan-hooks` together or neither. 
 
 ## the About screen
 
-**Settings -> About** is `AboutActivity`: a drawing, the project's name, who made it, what version this is, and three labelled facts — what emulator it runs, what it was read against, and what it is under.
+**the About button in the settings scene's corner** opens `AboutActivity`: a drawing, the project's name, what version this is, and three labelled facts — what emulators it runs, what it was built with reference to, and what it is under.
 
 **a colophon rather than a list of credits**, which is the shape and the argument at once. five facts do not want five cards to live in: a label column and a value column states all of it, on a landscape handheld, with nothing scrolled, nothing expanded and nothing hidden behind a tap that only reveals text. **a card is a container for a thing among other things and this page is one statement**, so there is no card anywhere on it and no adapter behind it.
 
-**it credits without thanking, and the reason is worth writing down** because it was learned the expensive way. an earlier shape gave every name a card that opened onto a paragraph, and every paragraph ended in *thank you* — not out of feeling but because the shape asked for prose and there was no prose of fact to give, so what filled it was sentiment. a labelled line states the same relationship. listing somebody under **Read against** is the credit.
+**it credits without thanking, and the reason is worth writing down** because it was learned the expensive way. an earlier shape gave every name a card that opened onto a paragraph, and every paragraph ended in *thank you* — not out of feeling but because the shape asked for prose and there was no prose of fact to give, so what filled it was sentiment. a labelled line states the same relationship. listing somebody under **References** is the credit.
 
-**there is not one image on the screen but the drawing.** no logo and no avatar: each would be a second thing to look at, and three of them turn a page into a list.
+**there is not one image on the screen but the drawing and the lettering over it.** no logo and no avatar: each would be a second thing to look at, and three of them turn a page into a list.
 
 **the mark at the end of a link is not one of those, it is punctuation** — an arrow out of the app means a browser and a chevron means a screen of this one, which is a distinction somebody can act on before pressing rather than after. it is a drawable rather than a character of the string, because the characters that would say it are not in the app's own face: the platform substitutes them from elsewhere, and they arrive at a lighter stroke than the word beside them and sitting nearer cap height than its optical centre. the vectors say the same thing at the weight this app chooses, and the style that places them tints them from the attribute the text takes, so a mark cannot end up a different colour from the word it follows.
 
@@ -633,7 +644,7 @@ the app then passes `--vulkan-driver` and `--vulkan-hooks` together or neither. 
 
 **the drawing is the largest thing on the page and is meant to be.** a colophon's decoration is its one image; at the size a settings screen would give it, it reads as an icon beside a table rather than as the thing the table is arranged around. what caps it is the space — in the wide variant it is the tallest view in the row, so it sets the row's height, and the row has to stay inside the roughly 404dp a landscape handheld leaves under its toolbar. **the glow behind it is deliberately smaller than it is**, so the paws and the tuft of hair carry past the light and it reads as something being lit rather than as a disc with a character stamped in the middle.
 
-**the drawing is a link, it moves before it leaves, and nothing on the screen says so.** a tap rocks it about its bottom edge for about six tenths of a second and opens the donation URL when that finishes, rather than on the press: a browser that arrived first would take the screen away before anybody saw it react. it carries no ripple, which makes it the one deliberate touch target in this app that does not look like one — the movement is the affordance and it is the only one. **the page does not sign itself and carries no attribution line**, which is what leaves the link unannounced: this screen names what the app is built on and declines to ask anybody for anything. the image's content description is where the destination is named, so a screen reader is told what the page does not print.
+**the drawing is a link, it moves before it leaves, and lettering drawn over it is what says so.** *tap me* is laid over the artwork as a sibling view rather than a sentence on the page, and a tap rocks the drawing about its bottom edge for about six tenths of a second, swaps it to a second face pulling an expression, and opens the donation URL when the rock finishes rather than on the press: a browser that arrived first would take the screen away before anybody saw it react. it carries no ripple — **the lettering asks and the movement answers** — and the lettering takes no part in the rock, which is why it is a view of its own rather than a layer of the drawable. the face stays until the screen is returned to, or puts itself back after a moment when nothing could open the link. **the page does not sign itself and carries no attribution line**: it names what the app is built on and asks for nothing in words. the image's content description is where the destination is named, so a screen reader is told what the page does not print.
 
 **the layout files are the frame, the composition and the table.** `activity_about.xml` is the toolbar and a scroll view; `part_about_body.xml` is the composition and has a `-land` variant, because the one thing the shape of the screen changes is whether the drawing sits above the text or beside it; `part_about_facts.xml` is the three-row table and is shared by both, so what differs between the two variants is a choice of axis and nothing that carries a word. **the scroll view sets `fillViewport`**, which is what lets the composition centre in the space rather than hang from the top of it, and it still scrolls on a screen shorter than either variant was written for.
 
