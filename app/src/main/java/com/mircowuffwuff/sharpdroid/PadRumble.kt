@@ -3,6 +3,7 @@ package com.mircowuffwuff.sharpdroid
 import android.content.Context
 import android.os.Build
 import android.os.CombinedVibration
+import android.os.SystemClock
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
@@ -23,7 +24,8 @@ import androidx.annotation.RequiresApi
  * convenience. a vibrate is a binder round trip to the system server, and a guest thread waiting on one
  * is a guest thread that cannot acknowledge a garbage-collection suspension. so the native side records
  * the request and delivers it from a thread of its own; what arrives here is already off the guest's
- * critical path, and is also **not** the UI thread.
+ * critical path, and is also **not** the UI thread. it is always the same thread, which is what lets
+ * each motor's pacing below be kept without a lock.
  *
  * **under automatic mapping a game's rumble drives every motor there is**: this device's own and those
  * of every connected controller that has any, which matches input being taken from every controller at
@@ -39,10 +41,21 @@ object PadRumble {
      *
      * the guest's seam sets a rumble level and leaves it set; it does not say how long. a vibrator
      * takes a duration and stops on its own. so each request is a short pulse and a game holding a
-     * rumble on sends more of them -- which is what every android emulator does with this seam, and it
-     * is why the number is small enough that two in a row read as continuous.
+     * rumble on sends more of them -- which is what every android emulator does with this seam. the
+     * length is Dolphin's.
      */
-    private const val PULSE_MILLIS = 80L
+    private const val PULSE_MILLIS = 100L
+
+    /**
+     * **how much of a pulse runs before the same level is sent again.**
+     *
+     * a game holding a level may ask for it on every frame, and each ask sent on would be a binder
+     * call per motor per frame -- and under automatic mapping one ask reaches every motor there is. so
+     * a motor already buzzing at the level asked for is left alone until most of its pulse has gone:
+     * at most twelve or so calls a second per motor while a level is held, and none while nothing is.
+     * a level that changes is sent at once.
+     */
+    private const val REFRESH_MILLIS = 80L
 
     /**
      * the weakest amplitude worth sending.
@@ -52,8 +65,15 @@ object PadRumble {
      */
     private const val FLOOR = 8
 
-    /** something that vibrates. */
+    /**
+     * something that vibrates, and what was last sent to it.
+     *
+     * [level] and [sentAt] are touched only on the rumble thread; see the class comment.
+     */
     private abstract class Motor(val amplitudeControl: Boolean) {
+        var level = 0
+        var sentAt = 0L
+
         abstract fun send(effect: VibrationEffect)
         abstract fun stop()
     }
@@ -91,7 +111,7 @@ object PadRumble {
      *
      * **replaced whole rather than edited**, by the UI thread on a device arriving or leaving, so the
      * rumble thread always iterates a list nobody is changing. a controller that stays connected keeps
-     * its entry.
+     * its entry, and with it the pacing of what was last sent to it.
      */
     @Volatile
     private var controllers: Map<Int, Motor> = emptyMap()
@@ -221,7 +241,8 @@ object PadRumble {
      * **it returns whether the platform took the request, and the host counts only the trues.** a
      * void version reported success for anything that did not crash, so a rumble refused for want of
      * the `VIBRATE` permission -- which throws here rather than at any earlier check -- was counted as
-     * delivered. a counter that cannot distinguish those is worse than none.
+     * delivered. a counter that cannot distinguish those is worse than none. a motor already buzzing
+     * at the level asked for counts as taken: the platform has it.
      *
      * @param port the port the guest asked about, 0 to 3. under automatic mapping every port drives
      *   every motor, since every controller is merged into port 1.
@@ -251,8 +272,16 @@ object PadRumble {
     private fun drive(motor: Motor, strength: Int): Boolean {
         try {
             if (strength < FLOOR) {
-                motor.stop()
+                // a stop is sent once: a game holding nothing may say so on every frame.
+                if (motor.level != 0) {
+                    motor.stop()
+                    motor.level = 0
+                }
                 return false
+            }
+            val now = SystemClock.uptimeMillis()
+            if (strength == motor.level && now - motor.sentAt < REFRESH_MILLIS) {
+                return true
             }
             val effect = if (motor.amplitudeControl) {
                 VibrationEffect.createOneShot(PULSE_MILLIS, strength)
@@ -263,6 +292,8 @@ object PadRumble {
                 VibrationEffect.createOneShot(PULSE_MILLIS, VibrationEffect.DEFAULT_AMPLITUDE)
             }
             motor.send(effect)
+            motor.level = strength
+            motor.sentAt = now
             return true
         } catch (e: Exception) {
             // the vibrator service can go away, and a throw crossing back into JNI would be delivered
