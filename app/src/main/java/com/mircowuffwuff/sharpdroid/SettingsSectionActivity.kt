@@ -2,6 +2,7 @@ package com.mircowuffwuff.sharpdroid
 
 import android.content.Intent
 import android.graphics.drawable.GradientDrawable
+import android.hardware.input.InputManager
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.widget.Toast
@@ -71,6 +72,23 @@ class SettingsSectionActivity : AppCompatActivity() {
      */
     private var colourRowArrival = COLOUR_ROW_STILL
 
+    /** the controller port this screen maps, 0 to 3, on [SettingsActivity.Section.CONTROLLER_PORT]. */
+    private var port = -1
+
+    /**
+     * the controller mapping, as the Controls rows and a port screen read and write it. read on the
+     * way in and again on every return, since a port screen writes it behind the Controls screen.
+     */
+    private val mapping by lazy { MappingFile(AppStorage.controllerMapping(filesDir)) }
+
+    /**
+     * every connected device's identity, **numbered afresh on every change rather than kept**, so a
+     * `#n` on screen is the `#n` a launch made now would give it. [DeviceNumbers] keeps a device's
+     * number for as long as it stays connected, which is right inside one run and wrong here: this
+     * process outlives reconnections that a launch, numbering in device id order, never saw.
+     */
+    private var numbers = DeviceNumbers()
+
     override fun onCreate(state: Bundle?) {
         Theme.apply(this)
         drawnWith = Theme.signature(this)
@@ -86,10 +104,25 @@ class SettingsSectionActivity : AppCompatActivity() {
             return
         }
 
+        if (section == SettingsActivity.Section.CONTROLLER_PORT) {
+            port = intent.getIntExtra(EXTRA_PORT, -1)
+            // a port out of range, or a game named, is a hand-written intent: the mapping is the
+            // install's and has four ports.
+            if (port !in 0 until ControllerMapping.PORTS || game != null) {
+                finish()
+                return
+            }
+        }
+        if (mapsControllers()) numbers.update()
+
         binding = ActivitySettingsSectionBinding.inflate(layoutInflater)
         setContentView(binding.root)
         SystemBars.apply(this, binding.root)
-        binding.toolbar.setTitle(section.title)
+        if (port >= 0) {
+            binding.toolbar.title = getString(R.string.setting_controller_port, port + 1)
+        } else {
+            binding.toolbar.setTitle(section.title)
+        }
         binding.toolbar.setNavigationOnClickListener { finish() }
 
         builtWithColourRow = Theme.chosen(this) == Settings.THEME_CUSTOM
@@ -176,6 +209,13 @@ class SettingsSectionActivity : AppCompatActivity() {
             adapter.refresh(rows())
             return
         }
+        // **and the mapping switch greys the four port rows under it**, so it is a change to five
+        // rows rather than one. the list keeps its length, which is what lets each port row fade
+        // where it stands.
+        if (row.key == Settings.KEY_AUTOMATIC_CONTROLLER_MAPPING) {
+            adapter.refresh(rows())
+            return
+        }
         // **the row that changed is named, so the rows under it slide rather than jump.** on a
         // per-game list a write can add or take away the Use global value button, which changes how
         // tall that row is; telling the adapter only that something changed is what makes the rest
@@ -195,14 +235,48 @@ class SettingsSectionActivity : AppCompatActivity() {
         if (!::adapter.isInitialized) return
         if (Theme.recreateIfStale(this, drawnWith)) return
         // the bars may have been toggled on another section, and the all-files switch is changed on
-        // the platform's own screen -- both come back through here.
+        // the platform's own screen -- both come back through here. so is a port screen's mapping,
+        // written behind the Controls rows, and a controller connected while this was away.
         SystemBars.apply(this, binding.root)
+        if (mapsControllers()) {
+            mapping.reload()
+            numbers = DeviceNumbers().also { it.update() }
+            if (section == SettingsActivity.Section.CONTROLLER_PORT) {
+                getSystemService(InputManager::class.java)?.registerInputDeviceListener(devices, null)
+            }
+        }
         // **a row that is part way in or out is holding the list one row away from what the store
         // says, and it is doing that deliberately.** this method runs before the pass that moves it,
         // so redrawing here would put the list straight into its final shape and leave the animation
         // describing a change that had already happened -- which RecyclerView reports as an
         // inconsistency rather than ignoring.
         if (colourRowArrival == COLOUR_ROW_STILL) adapter.refresh(rows())
+    }
+
+    override fun onPause() {
+        super.onPause()
+        getSystemService(InputManager::class.java)?.unregisterInputDeviceListener(devices)
+    }
+
+    /** whether this screen draws the controller mapping: the app's own Controls, or a port. */
+    private fun mapsControllers(): Boolean = game == null &&
+        (section == SettingsActivity.Section.CONTROLS ||
+            section == SettingsActivity.Section.CONTROLLER_PORT)
+
+    /**
+     * a device arriving, leaving or changing, while a port screen is in front: its rows say which
+     * bound devices are connected, and that moves with the devices.
+     * the Controls rows name devices from the file alone, so that screen does not listen.
+     */
+    private val devices = object : InputManager.InputDeviceListener {
+        override fun onInputDeviceAdded(deviceId: Int) = devicesChanged()
+        override fun onInputDeviceRemoved(deviceId: Int) = devicesChanged()
+        override fun onInputDeviceChanged(deviceId: Int) = devicesChanged()
+    }
+
+    private fun devicesChanged() {
+        numbers = DeviceNumbers().also { it.update() }
+        adapter.refresh(rows())
     }
 
     // ----------------------------------------------------------------------------------------------
@@ -236,6 +310,7 @@ class SettingsSectionActivity : AppCompatActivity() {
             SettingsActivity.Section.JIT_ACCURACY -> jitAccuracyRows()
             SettingsActivity.Section.GRAPHICS -> graphicsRows()
             SettingsActivity.Section.CONTROLS -> controlsRows()
+            SettingsActivity.Section.CONTROLLER_PORT -> if (game == null) portRows() else emptyList()
             SettingsActivity.Section.GAME_FILES -> if (game == null) gameFilesRows() else emptyList()
             // User data is a screen of its own, so its card never opens this activity. a
             // hand-written intent still can, and an empty list is what it gets - the same answer the
@@ -578,38 +653,161 @@ class SettingsSectionActivity : AppCompatActivity() {
      * state and a tap opens the screen that changes it.
      */
     /**
-     * the Controls section.
+     * the Controls section: the mapping switch, the four ports it hands input to when off, and
+     * vibration.
      *
-     * **both rows are on by default, and both are read by the process that runs the guest rather than
-     * turned into a launch argument.** that is the difference between these and every row in Emulation:
-     * a build, a preset or a resolution has to reach the payload's command line, while these two govern
-     * what this app does with events it receives and with a request it is handed -- so nothing is
-     * passed, and neither of them can move the vector a launch is made with.
+     * **both switches are on by default, and every row here is read by the process that runs the
+     * guest rather than turned into a launch argument.** that is the difference between these and
+     * every row in Emulation: a build, a preset or a resolution has to reach the payload's command
+     * line, while these govern what this app does with events it receives and with a request it is
+     * handed -- so nothing is passed, and none of them can move the vector a launch is made with.
      *
-     * **the mapping row is the app's, and a game's screen leaves it out.** a controller mapping is set
-     * up for the controllers a person owns rather than for a title, and the launch reads it from the
-     * app's own store. what a mapping set up once may still want for one title is silence, which is
-     * the vibration row.
+     * **the ports sit under the switch they depend on**, greyed while it is on, and vibration under a
+     * heading of its own below them: it governs both ways of mapping, so it belongs to neither.
      *
-     * **there are no port rows under the mapping switch**, which is why turning it off leaves a run
-     * with no controller at all. the row's own summary says what on does; a switch that silently meant
-     * something other than its label is what a settings screen must never be.
+     * **the mapping switch and the ports are the app's, and a game's screen leaves them out**, headings
+     * included, which leaves it the vibration row alone. a controller mapping is set up for the
+     * controllers a person owns rather than for a title, and the launch reads it from the app's own
+     * store and file. what a mapping set up once may still want for one title is silence.
      */
-    private fun controlsRows(): List<SettingRow> = listOf(
-        SettingRow.Switch(
-            key = Settings.KEY_AUTOMATIC_CONTROLLER_MAPPING,
-            title = R.string.setting_automatic_controller_mapping,
-            summary = R.string.setting_automatic_controller_mapping_summary,
-            default = true,
-            perGame = false,
-        ),
-        SettingRow.Switch(
+    private fun controlsRows(): List<SettingRow> {
+        val rows = mutableListOf<SettingRow>(
+            SettingRow.Switch(
+                key = Settings.KEY_AUTOMATIC_CONTROLLER_MAPPING,
+                title = R.string.setting_automatic_controller_mapping,
+                summary = R.string.setting_automatic_controller_mapping_summary,
+                default = true,
+                perGame = false,
+            ),
+        )
+        // **not built at all for a game**, rather than built and filtered out: they read the mapping
+        // file, which a game's screen has no use for.
+        if (game == null) {
+            val automatic = settings.automaticControllerMapping ?: true
+            rows += SettingRow.Header(R.string.settings_group_controller_ports, perGame = false)
+            for (port in 0 until ControllerMapping.PORTS) rows += portRow(port, automatic)
+        }
+        rows += SettingRow.Header(R.string.settings_group_vibration, perGame = false)
+        rows += SettingRow.Switch(
             key = Settings.KEY_CONTROLLER_VIBRATION,
             title = R.string.setting_controller_vibration,
             summary = R.string.setting_controller_vibration_summary,
             default = true,
-        ),
-    )
+        )
+        return rows
+    }
+
+    /**
+     * one port's row: the devices its bindings use, which is what tells four ports apart at a glance,
+     * or that it maps nothing.
+     *
+     * **a mapping file this app cannot read greys every port and says why**, whatever the switch
+     * says: a port screen over it could only show nothing and write over a mapping that is somebody's
+     * work. see [MappingFile].
+     */
+    private fun portRow(port: Int, automatic: Boolean): SettingRow {
+        val unwritable = mapping.unwritable
+        val inUse = unwritable == null && mapping.inUse(port)
+        val devices = if (unwritable == null) mapping.devices(port) else emptyList()
+        val value = when {
+            unwritable == MappingFile.Unwritable.NEWER -> getString(R.string.controller_mapping_newer)
+            unwritable == MappingFile.Unwritable.UNREADABLE ->
+                getString(R.string.controller_mapping_unreadable)
+            devices.isNotEmpty() -> devices.joinToString(", ") { ControllerMapping.label(it) }
+            else -> getString(R.string.controller_port_empty)
+        }
+        return SettingRow.Screen(
+            key = null,
+            title = R.string.setting_controller_port,
+            summary = null,
+            value = value,
+            chosen = inUse,
+            titleArg = port + 1,
+            enabled = !automatic && unwritable == null,
+            perGame = false,
+            id = "port-$port",
+            reset = { wrote(mapping.clear(port)) },
+        ) {
+            startActivity(section(SettingsActivity.Section.CONTROLLER_PORT).putExtra(EXTRA_PORT, port))
+        }
+    }
+
+    /**
+     * one controller port: a row per target under Eden's headings.
+     *
+     * **a stick's click sits under its stick**, as Eden puts it, rather than among the buttons: it is
+     * pressed with the thumb that is already on the stick, and that is where somebody mapping one
+     * looks for it.
+     */
+    private fun portRows(): List<SettingRow> {
+        val rows = mutableListOf<SettingRow>()
+        for ((group, targets) in PORT_LAYOUT) {
+            rows += SettingRow.Header(group)
+            for ((name, title) in targets) rows += bindingRow(PadTarget.NAMES.indexOf(name), title, group)
+        }
+        return rows
+    }
+
+    /**
+     * one target's row: what drives it, said as the device and the input, and whether that device is
+     * here. a tap captures a new binding, and the long press clears it.
+     */
+    private fun bindingRow(target: Int, title: Int, group: Int): SettingRow {
+        val bound = mapping.binding(port, target)
+        val value = if (bound == null) {
+            getString(R.string.controller_not_set)
+        } else {
+            val said = getString(R.string.controller_binding,
+                ControllerMapping.label(bound.device), ControllerMapping.inputLabel(bound))
+            if (numbers.deviceIdOf(bound.device) == DeviceNumbers.NO_DEVICE) {
+                getString(R.string.controller_not_connected, said)
+            } else {
+                said
+            }
+        }
+        val id = "binding-${PadTarget.NAMES[target]}"
+        return SettingRow.Screen(
+            key = null,
+            title = title,
+            summary = null,
+            value = value,
+            chosen = bound != null,
+            enabled = mapping.unwritable == null,
+            id = id,
+            reset = { wrote(mapping.unbind(port, target)) },
+        ) {
+            // **a direction is named with its group in the dialog**, where "Up" alone would not say
+            // which of three it is. the row does not need it: the heading above it says.
+            val name = if (title in DIRECTIONS) {
+                getString(R.string.capture_target_in_group, getString(group), getString(title))
+            } else {
+                getString(title)
+            }
+            InputCapture(
+                this, name, port * PadTarget.COUNT + target, numbers,
+                onBound = { binding ->
+                    wrote(mapping.bind(binding))
+                    redraw(id)
+                },
+                onClear = {
+                    wrote(mapping.unbind(port, target))
+                    redraw(id)
+                },
+            ).show()
+        }
+    }
+
+    /** the list again with the row named [id] redrawn where it stands, after a write that row made. */
+    private fun redraw(id: String) {
+        val rows = rows()
+        val row = rows.firstOrNull { it.id == id }
+        if (row == null) adapter.submit(rows) else adapter.submit(rows, row)
+    }
+
+    /** a mapping write's outcome, said only when it failed -- the row already shows a success. */
+    private fun wrote(ok: Boolean) {
+        if (!ok) Toast.makeText(this, R.string.controller_mapping_write_failed, Toast.LENGTH_LONG).show()
+    }
 
     private fun gameFilesRows(): List<SettingRow> {
         // **a count rather than the folders themselves.** the build row names one build and the
@@ -725,6 +923,57 @@ class SettingsSectionActivity : AppCompatActivity() {
          * own settings, which is what every screen reached from the cog sends.
          */
         const val EXTRA_GAME = "game"
+
+        /** the controller port a [SettingsActivity.Section.CONTROLLER_PORT] screen maps, 0 to 3. */
+        const val EXTRA_PORT = "port"
+
+        /**
+         * a port screen's rows: each heading and its targets, by the mapping file's target names, and
+         * the face buttons in the order [PadTarget] lists them.
+         */
+        private val PORT_LAYOUT = listOf(
+            R.string.controller_group_buttons to listOf(
+                "cross" to R.string.target_cross,
+                "circle" to R.string.target_circle,
+                "square" to R.string.target_square,
+                "triangle" to R.string.target_triangle,
+                "options" to R.string.target_options,
+                "create" to R.string.target_create,
+                "touchpad" to R.string.target_touchpad,
+                "ps" to R.string.target_ps,
+                "mic" to R.string.target_mic,
+            ),
+            R.string.controller_group_dpad to listOf(
+                "up" to R.string.target_up,
+                "down" to R.string.target_down,
+                "left" to R.string.target_left,
+                "right" to R.string.target_right,
+            ),
+            R.string.controller_group_left_stick to listOf(
+                "left-stick-up" to R.string.target_up,
+                "left-stick-down" to R.string.target_down,
+                "left-stick-left" to R.string.target_left,
+                "left-stick-right" to R.string.target_right,
+                "l3" to R.string.target_l3,
+            ),
+            R.string.controller_group_right_stick to listOf(
+                "right-stick-up" to R.string.target_up,
+                "right-stick-down" to R.string.target_down,
+                "right-stick-left" to R.string.target_left,
+                "right-stick-right" to R.string.target_right,
+                "r3" to R.string.target_r3,
+            ),
+            R.string.controller_group_triggers to listOf(
+                "l1" to R.string.target_l1,
+                "r1" to R.string.target_r1,
+                "l2" to R.string.target_l2,
+                "r2" to R.string.target_r2,
+            ),
+        )
+
+        /** the titles that name a direction, which a capture dialog names with their heading. */
+        private val DIRECTIONS =
+            setOf(R.string.target_up, R.string.target_down, R.string.target_left, R.string.target_right)
 
         /** where [colourRowArrival] is kept while a theme change rebuilds this screen. */
         private const val STATE_COLOUR_ROW = "colourRow"

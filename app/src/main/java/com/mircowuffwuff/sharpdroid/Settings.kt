@@ -446,8 +446,8 @@ class Settings private constructor(
      * whether controllers reach the guest through the app's own automatic mapping: every connected
      * controller, by button position, merged into port 1.
      *
-     * **off hands controller input to the port rows**, which is to say to nothing while there are none
-     * to hand it to: a run with this off has no controller. the row's own summary says what on does.
+     * **off hands controller input to the port rows** and the controller mapping they write, so a run
+     * with this off and nothing mapped has no controller. the row's own summary says both.
      *
      * **the app's rather than a game's, so it does not fall back.** a mapping is set up for the
      * controllers a person owns rather than for a title, and the launch reads this out of the app's

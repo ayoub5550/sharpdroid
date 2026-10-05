@@ -341,6 +341,46 @@ class ControllerMapping private constructor(
         }
 
         /**
+         * an identity as the settings screens draw it: `Xbox Wireless Controller #2`. [describe]
+         * without the quotes, which mark where a name ends in a log line and are noise on a row that
+         * holds nothing else.
+         */
+        @JvmStatic
+        fun label(identity: String): String {
+            val parts = identity.split('\u0000')
+            if (parts.size != 3) return identity
+            val role = if (parts[1].isEmpty()) "" else " ${parts[1]}"
+            return "${parts[0]}$role #${parts[2]}"
+        }
+
+        /**
+         * a binding's input as a row draws it: `Button A`, `Hat Y−`.
+         *
+         * **android's own name, tidied, rather than a table of ours** -- the name is what the file
+         * holds, so the row and the file say the same thing, and a key no table anticipated still
+         * reads as itself. the cost is a few names nobody would have chosen: `Button Thumbl` is what
+         * Dolphin's own table calls `Button L3`. an axis on a source other than a joystick's, which
+         * only a hand-written file can hold, says its source as well, since the same axis can be on
+         * two.
+         */
+        @JvmStatic
+        fun inputLabel(binding: Binding): String {
+            if (binding.keyCode != NO_KEY) {
+                return words(KeyEvent.keyCodeToString(binding.keyCode).removePrefix("KEYCODE_"))
+            }
+            val axis = words(MotionEvent.axisToString(binding.axis).removePrefix("AXIS_"))
+            val sign = if (binding.negative) "−" else "+"
+            val source = SOURCES.entries.firstOrNull { it.value == binding.source }?.key
+            if (source == null || binding.source == InputDevice.SOURCE_JOYSTICK) return "$axis$sign"
+            return "${words(source)} $axis$sign"
+        }
+
+        /** `BUTTON_THUMBL` as `Button Thumbl`. */
+        private fun words(name: String): String = name.split('_').joinToString(" ") { word ->
+            word.lowercase().replaceFirstChar { it.uppercaseChar() }
+        }
+
+        /**
          * a device's identity, short of its number: its name, and a role when it is not a gamepad.
          *
          * **the name, as Dolphin identifies a device**, rather than vendor and product as Eden does
