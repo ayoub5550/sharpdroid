@@ -11,7 +11,7 @@ why sharpdroid is two repositories, what lives in each, and where every artefact
 | [`mircowuffwuff/sharpemu`](https://github.com/mircowuffwuff/sharpemu) | our fork of [SharpEmu](https://github.com/sharpemu/sharpemu), the PS5 emulator itself. `main` mirrors upstream and `android` carries everything android needs to be *correct*, which is the only maintained branch and the one that ships. localized performance work lives on `perf/` topic branches and goes upstream as pull requests | follows upstream, which moves fast. absorbs upstream releases |
 | **sharpdroid** | **this tree.** the android app, the host layer it runs SharpEmu inside, the thunks, the test guests and the build tooling | follows android and our own work. releases an APK |
 
-**the rule that drew that line is release cadence, not architecture.** two things belong in one repository when they must change in the same commit; they belong apart when they are released independently. the fork tracks somebody else's project and must be rebasable against it, so it is separate. everything here ships as one APK and versions together, so it is one.
+**the rule that drew that line is release cadence, not architecture.** two things belong in one repository when they must change in the same commit; they belong apart when they are released independently. the fork tracks somebody else's project and must stay cheap to merge upstream releases into, so it is separate. everything here ships as one APK and versions together, so it is one.
 
 ### why the host layer is not a third repository
 
@@ -27,7 +27,7 @@ a repository boundary there would buy an independent version number nobody would
 ## the tree
 
 ```
-├── LICENSE  LICENSES/  REUSE.toml  .gitignore  .gitattributes  .gitmodules
+├── readme.md  LICENSE  LICENSES/  REUSE.toml  .gitignore  .gitattributes  .gitmodules
 ├── docs/
 │   ├── repo-structure.md     this file
 │   ├── build-format.md       what a SharpEmu build is, and what a payload must implement
@@ -35,7 +35,7 @@ a repository boundary there would buy an independent version number nobody would
 │   ├── guest-files.md        a granted game directory, answered underneath the guest's syscalls
 │   ├── vulkan.md             the vulkan thunk, both window systems, custom driver injection
 │   ├── audio.md              the AAudio thunk, the callback boundary, the stall watchdog
-│   ├── pad.md               the gamepad bridge, its formats, rumble delivery
+│   ├── pad.md                the gamepad bridge, its formats, the controller mapping, rumble
 │   ├── app.md                the screens, the surface, the launch extras, the settings and merge
 │   ├── frontends.md          starting a game from another app: the component, the two forms
 │   └── scripts.md            every script, and the arguments worth knowing
@@ -79,8 +79,8 @@ a repository boundary there would buy an independent version number nobody would
 │   ├── build-thunks.py       assembles their guest halves
 │   ├── package-build.py      a fork publish, or an archive, into a build with an identity
 │   ├── stage.py              a build, a game, the guest libraries, a driver, the shell binary
-│   ├── regression.py         stage, run the 15 host-layer modes, report
-│   └── sharpemu/             the eight modules they share: shell, paths, toolchain, native,
+│   ├── regression.py         stage, run the 19 host-layer modes, report
+│   └── sharpdroid/           the eight modules they share: shell, paths, toolchain, native,
 │                             vocabulary, device, builds, resolve
 ├── toolchain.json            every required toolchain version, and where to get it
 ├── toolchain/                toolchains fetched into the repo. ignored
@@ -103,7 +103,7 @@ three **git submodules under `external/`**, each pinned to an exact commit:
 
 | | pin | license | what it is |
 | --- | --- | --- | --- |
-| [FEX](https://github.com/FEX-Emu/FEX) | tag `FEX-2607`, `1cc4b93e7` | MIT | the x86-64 translation core the host layer links |
+| [FEX](https://github.com/FEX-Emu/FEX) | tag `FEX-2608`, `e869aa644` | MIT | the x86-64 translation core the host layer links |
 | [libadrenotools](https://github.com/bylaws/libadrenotools) | `8fae8ce` | BSD-2-Clause | custom GPU driver loading |
 | [the SharpEmu fork](https://github.com/mircowuffwuff/sharpemu) | the `android` commit a bundled build is cut from | GPL-2.0-or-later | the emulator itself |
 
@@ -171,8 +171,8 @@ the *workspace* — the directory this tree sits in — is searched as well, whi
 workspace/
 ├── sharpdroid/           this tree
 ├── sharpemu/             a fork checkout of your own, if you keep one. reached by
-│                       SHARPDROID_SHARPEMU,
-│                         never found here -- external/sharpemu is what a build resolves to
+│                         SHARPDROID_SHARPEMU and never found here -- external/sharpemu
+│                         is what a build resolves to
 ├── FEX/  libadrenotools/ only consulted if external/ is empty
 └── android-sdk/  jdk-*/  dotnet-sdk/, driver packages, games
 ```
@@ -184,7 +184,7 @@ set **`SHARPDROID_WORKSPACE`** to point that elsewhere.
 **`toolchain.json`** declares every required version in one place, and **`scripts/sharpdroid/toolchain.py`** resolves them. no build script contains a version number or a toolchain path of its own; each piece is found when it is first used, so a missing JDK cannot break the native build:
 
 ```python
-from sharpemu import toolchain as tc
+from sharpdroid import toolchain as tc
 
 toolchain = tc.resolve().require("ndk", "cmake")
 ```
@@ -202,7 +202,7 @@ per tool, first hit wins, and there are only two:
 
 a working tree with `external/sharpemu` uninitialised is an error rather than a fallback, and the message names the way out — `git submodule update --init --recursive`.
 
-**every hit is version-checked**, which is what makes layers 3 and 4 safe: a java 8 on `JAVA_HOME` is named and skipped rather than failing later inside `javac`, and a runtime-only .NET install is recognised as having no SDKs. layers 3 and 4 say what they picked. **an explicit `SHARPEMU_*` that fails its check is an error, never a silent fallback** — if you set it, you meant it.
+**every hit is checked before it is used**: a directory without the files that make it what it claims to be is refused by name rather than failing later inside a compiler, and the NDK's revision is read and held to its floor. **an explicit `SHARPDROID_*` that fails its check is an error, never a silent fallback** — if you set it, you meant it.
 
 the versions required, and why they are not incidental: **NDK 29.0.14206865** — r29 is a floor because FEXCore uses `std::atomic_ref`, which libc++ did not implement until LLVM 19, and this exact build is the one the turnip package was compiled with, so a different r29+ is accepted with a warning. **cmake 3.22.1** and ninja from the SDK. **build-tools 35.0.0**, **platform android-35**, **JDK 21**, and a **.NET SDK satisfying the fork's `global.json`** — 10.0.103 or a later 10.0.x. the APK targets API 35 with a minimum of API 28.
 
