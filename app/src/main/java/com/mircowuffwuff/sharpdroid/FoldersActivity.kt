@@ -14,7 +14,7 @@ import java.util.concurrent.Executors
 /**
  * the game folder manager: which folders the user granted, how one arrives, and how one goes.
  *
- * reached from **Settings → Data → Game folders**, and from nowhere else -- the game list's toolbar
+ * reached from **Settings → Game files → Game folders**, and from nowhere else -- the game list's toolbar
  * carries only the cog, because adding a folder is done a handful of times and reading the list is
  * done every launch. its empty state offers the picker directly rather than this screen: with no
  * folders yet there is nothing here to manage.

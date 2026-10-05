@@ -27,8 +27,8 @@ import java.io.File
  * **the permission is read at each launch and never cached.** it can be revoked from the platform's
  * own settings while the app is running, and a stale yes would be a path the app can no longer open.
  *
- * the row that turns it on is in Settings → Data, under the same *Game files* label as the folder
- * manager -- the two are one question, which is where a library comes from and how it is reached.
+ * the row that turns it on is in Settings → Game files, beside the folder manager -- the two are
+ * one question, which is where a library comes from and how it is reached.
  *
  * **`android.provider.Settings` is imported here and this app has a [Settings] of its own.** the
  * explicit import wins inside this file, which is correct and worth a sentence, because the two are

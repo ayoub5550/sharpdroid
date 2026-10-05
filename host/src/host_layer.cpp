@@ -755,8 +755,8 @@ int HostLayer::RunMain(int argc, char** argv) {
     } else if (std::strcmp(argv[ArgIndex], "--trace-pad") == 0) {
       HostLayer::PadBridge::SetTrace(true);
     } else if (std::strcmp(argv[ArgIndex], "--pad-selftest") == 0) {
-      // one fabricated rumble when the guest first polls, so the delivery path can be shown to work
-      // on a title that never asks for one. it announces itself in the log.
+      // one fabricated rumble on each port in turn when the guest first polls, so the delivery path
+      // can be shown to work on a title that never asks for one. it announces itself in the log.
       HostLayer::PadBridge::SetSelfTest(true);
     } else if (std::strcmp(argv[ArgIndex], "--pause-selftest") == 0) {
       PauseSelfTest = true;

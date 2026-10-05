@@ -66,7 +66,7 @@ public final class HostLayer {
      * and it neither allocates nor blocks. sticks are 0..255 with 128 centred and Y growing downward;
      * triggers are 0..255. see {@code PadState}, which is the only caller.
      *
-     * @param port the port index, 0 to 3. index 0 is Controller port 1.
+     * @param port the port index, 0 to 3. index 0 is Port 1.
      */
     public static native void nativeSetPadState(
             int port, int buttons, int leftX, int leftY, int rightX, int rightY, int leftTrigger,

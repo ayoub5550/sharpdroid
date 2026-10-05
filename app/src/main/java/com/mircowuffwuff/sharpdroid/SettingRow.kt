@@ -12,7 +12,8 @@ package com.mircowuffwuff.sharpdroid
  * **a row knows its key, and the key is what makes "unset" reachable.** [Settings.isSet] answers
  * whether the user has ever touched this row, which decides whether a long press offers *Use
  * default* at all. a row with no key -- an action, a header, a permission this app does not own -- is
- * never in either state.
+ * never in either state, unless it stores outside the preferences and carries a [Screen.reset] for
+ * its way back.
  *
  * **nothing on screen distinguishes a set row from an untouched one**, and that is a trade rather
  * than an omission: a mark saying so has to hold its width on every row, which indents the whole

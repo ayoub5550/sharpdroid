@@ -38,7 +38,7 @@
     <string name="folders_remove">Remove</string>
     <string name="cancel">Cancel</string>
 
-    <!-- the all-files strings. the toggle itself is a row in Settings -> Data; this is the one case
+    <!-- the all-files strings. the toggle itself is a row in Settings -> Game files; this is the one case
          that row cannot express, since it is what a tap on it reports when there is no platform
          screen behind it. -->
     <string name="all_files_unavailable">This device has no all-files setting to open</string>

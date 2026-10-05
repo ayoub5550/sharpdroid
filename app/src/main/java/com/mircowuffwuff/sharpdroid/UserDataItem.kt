@@ -10,9 +10,9 @@ import java.io.File
  * common action the least visible thing on the screen. the parts below it are for somebody who wants
  * one of them, and each says its own size so the containment is legible rather than guessed at.
  *
- * **the settings card is here even though it is not a file under the user directory.** it is a
- * `SharedPreferences` line, and it is still something the person chose and something an export has to
- * carry: a backup that restores a library and its saves but drops the theme, the driver and the preset
+ * **the settings card is here even though it is not a file under the user directory.** it is
+ * `SharedPreferences` lines and the controller mapping's file beside `user/`, and it is still
+ * something the person chose and something an export has to carry: a backup that restores a library and its saves but drops the theme, the driver and the preset
  * leaves setup work behind, which is exactly what a backup is for avoiding.
  */
 data class UserDataItem(
@@ -50,8 +50,9 @@ data class UserDataItem(
          * **on a worker.** it is a recursive walk of a directory a long session fills, and the number
          * it produces is the only thing on a card that has to be read from disk at all.
          *
-         * @param settingsChanged how many rows differ from their default, from
-         *   [Settings.changedFromDefault]. it is not a measurement and is not taken here.
+         * @param settingsChanged how many changes the card reports: the app's rows that differ from
+         *   their default, every row a game overrides, and each controller port mapping anything. it is
+         *   not a measurement and is not taken here.
          */
         @JvmStatic
         fun measure(filesDir: File, settingsChanged: Int): List<UserDataItem> {

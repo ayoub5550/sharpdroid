@@ -7,9 +7,8 @@
   is no radio and no icon column - the two things a manager card carries that this one must not, since
   a control that does nothing is worse than an empty row.
 
-  the chevron points along the reading direction rather than down: this card opens a screen, where an
-  About card opens in place, and the same glyph turned the same way for both would say one thing about
-  two different journeys.
+  the chevron points along the reading direction rather than down, because this card opens a screen
+  rather than unfolding in place.
 -->
 <com.google.android.material.card.MaterialCardView
     xmlns:android="http://schemas.android.com/apk/res/android"

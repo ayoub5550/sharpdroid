@@ -17,7 +17,7 @@ import java.util.concurrent.Executors
  * the GPU driver manager: which Vulkan drivers are on the device, which one a game loads, and how one
  * arrives.
  *
- * reached from **Settings → Graphics → Custom driver**, and from nowhere else.
+ * reached from **Settings → Graphics → Graphics driver**, and from nowhere else.
  *
  * **the system driver is pinned at the top with no delete button**, and it is what a launch loads
  * when nothing is chosen -- Eden's shape, and the same shape the build manager pins the bundled build

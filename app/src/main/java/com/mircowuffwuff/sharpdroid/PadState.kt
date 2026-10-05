@@ -170,8 +170,8 @@ object PadState {
      * with PlayStation glyphs on it behave the way its glyphs say, and it is what every other android
      * emulator of a PlayStation does.
      *
-     * `KEYCODE_BACK` is deliberately absent. a gamepad that reports its own back button would
-     * otherwise open the in-game panel, and on this device the built-in controls do exactly that.
+     * `KEYCODE_BACK` is deliberately absent, so a gamepad that reports its own back button opens the
+     * in-game panel, as the built-in controls on this device do.
      */
     private fun buttonFor(keyCode: Int): Int = when (keyCode) {
         KeyEvent.KEYCODE_BUTTON_A -> PadButton.CROSS

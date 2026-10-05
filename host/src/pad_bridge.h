@@ -72,7 +72,7 @@ enum Command : uint32_t {
 };
 
 // **four ports, numbered from 0 here and from 1 on screen.** port index 0 is what the app calls
-// Controller port 1.
+// Port 1.
 inline constexpr uint32_t PortCount = 4;
 
 // --- the formats ---------------------------------------------------------------------------------
@@ -190,8 +190,8 @@ struct Controls {
 // the app's push for one port. the latest wins and nothing is queued: a poll wants the current
 // position of a stick, and a backlog of stick positions is a backlog of wrong answers. connected
 // false is what a pad going away looks like. **it writes only these fields of the port**, so motion
-// and touch, which come from sources of their own, are left as they were. a port index outside the
-// four is ignored and said once.
+// and touch, which this push does not carry, are left as they were. a port index outside the four is
+// ignored and said once.
 void SetControls(uint32_t Port, const Controls& Pad);
 
 // the dispatch entry, called from LinuxSyscallHandler::Dispatch for any magic number.

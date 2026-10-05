@@ -265,8 +265,8 @@ uint64_t Read(FEXCore::HLE::SyscallArguments* Args) {
     return static_cast<uint64_t>(Refusal);
   }
 
-  // no pointer translation, which is what route B buys everywhere else in here too: guest and host
-  // share one address space 1:1, so the guest's buffer is written in place.
+  // no pointer translation: guest and host share one address space 1:1, so the guest's buffer is
+  // written in place.
   PortState State {};
   {
     std::lock_guard<std::mutex> Lock(StateGate);

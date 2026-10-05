@@ -18,10 +18,9 @@ import com.mircowuffwuff.sharpdroid.databinding.ActivitySettingsBinding
  * cards that do is a card read past. the corner is where the game list's cog is, one press earlier,
  * which is the position it was given deliberately rather than the position that was free.
  *
- * **only the sections that have something in them are here.** Controls and Logging are sections this
- * app will grow, and every row in both is a later piece of work; a button that opens an empty screen
- * is worse than a button that is not there yet, because the empty screen looks like a bug in the one
- * that is. a section arrives with its rows.
+ * **only the sections that have something in them are here.** a button that opens an empty screen is
+ * worse than a button that is not there, because the empty screen looks like a bug in the one that
+ * is. a section arrives with its rows.
  */
 class SettingsActivity : AppCompatActivity() {
 

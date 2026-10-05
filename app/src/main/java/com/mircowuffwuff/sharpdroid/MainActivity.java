@@ -95,7 +95,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
      * same code path.
      *
      * <p>this constant is the last of the three answers rather than the only one: the launch intent
-     * wins, then Settings → Graphics → Custom driver, then this.
+     * wins, then Settings → Graphics → Graphics driver, then this.
      *
      * <p><b>null on purpose.</b> turnip injection works, and the stock driver is nonetheless the
      * default, because it is the configuration every measurement in this project is taken at -- a
@@ -142,7 +142,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
      */
     private boolean tracePad;
     /**
-     * {@code --ez padselftest}, one fabricated rumble when the guest first polls.
+     * {@code --ez padselftest}, one fabricated rumble on each port in turn when the guest first polls.
      *
      * <p>it exists because the two directions of the pad bridge fail independently and an ordinary run
      * exercises only one: a game that polls proves the read path continuously, and rumble is proven by
@@ -681,10 +681,11 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     /**
      * a controller arriving or leaving mid-run.
      *
-     * <p><b>removal is what this is for.</b> a pad that is used registers itself on its first event, so
-     * one plugged in during a game is picked up without help. one unplugged is not an event at all, and
+     * <p><b>removal is what nothing else would catch.</b> one unplugged is not an event at all, and
      * without this a stick that was held over when the cable came out stays held as far as the guest is
-     * concerned, forever.
+     * concerned, forever. an arrival matters too: it is where rumble finds a controller's motors, and
+     * under a controller mapping where a device's bindings and motors are resolved -- only automatic
+     * mapping picks a pad up from its first event alone.
      */
     private final android.hardware.input.InputManager.InputDeviceListener padListener =
             new android.hardware.input.InputManager.InputDeviceListener() {
@@ -1451,8 +1452,8 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
             args.add("--audio-watchdog");
         }
         // the pad bridge, in the shape the two above have. it needs nothing else from this side beyond
-        // the flag and the pushes PadState makes: the state travels down and the guest polls for it, so
-        // there is no thread and no callback anywhere in it.
+        // the flag, the pushes PadState makes and PadRumble: the state travels down and the guest polls
+        // for it, and rumble is the one call up, made from the host layer's own delivery thread.
         args.add("--pad");
         if (tracePad) {
             args.add("--trace-pad");

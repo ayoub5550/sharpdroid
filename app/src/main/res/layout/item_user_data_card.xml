@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  one card on the User data screen: save data, the shader cache, the logs, the settings.
+  one card on the User data screen: everything, save data, the shader cache, the settings.
 
   **the manager screen's shell, and not the manager screen's card.** the toolbar, the grid, the fade
   and the frame around them are shared verbatim - see activity_manager.xml - and the same rounded

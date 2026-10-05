@@ -18,7 +18,7 @@ import java.io.File
  *
  * one activity for every section rather than one per section, because the rows differ and nothing
  * else does -- the toolbar, the list, the store and the "Use default" long press are the same screen
- * four times over.
+ * for every one of them.
  *
  * **and one activity for the global scene and for a game's own**, which is the stronger half of the
  * same argument: named a game, this screen writes that game's store instead of the app's and draws
@@ -30,9 +30,10 @@ import java.io.File
  * settings → Graphics* is the shape.
  *
  * **a section reached from a row rather than from the grid is not an exception to that**, and
- * [SettingsActivity.Section.JIT_ACCURACY] is the one: what the rule forbids is a run of two or
- * three rows put behind a press, and what that row opens is a page of ten with subsections of its
- * own, reading out what is chosen inside it the way the build and driver rows read out theirs.
+ * [SettingsActivity.Section.JIT_ACCURACY] and [SettingsActivity.Section.CONTROLLER_PORT] are the two:
+ * what the rule forbids is a run of two or three rows put behind a press, and what those rows open is
+ * a page with subsections of its own -- ten rows of JIT knobs, or a port's 29 -- reading out what is
+ * chosen inside it the way the build and driver rows read out theirs.
  */
 class SettingsSectionActivity : AppCompatActivity() {
 
@@ -196,7 +197,7 @@ class SettingsSectionActivity : AppCompatActivity() {
         if (row.key == Settings.KEY_FULLSCREEN) {
             SystemBars.apply(this, binding.root)
         }
-        // **the preset is the one write here that changes every row under it**, because a knob
+        // **the preset is a write that changes every row under it**, because a knob
         // row's default is the rung's own value and choosing a rung also drops every override on
         // it. so the narrow notification below would leave nine switches drawn against the rung
         // before this one.
@@ -630,29 +631,6 @@ class SettingsSectionActivity : AppCompatActivity() {
     }
 
     /**
-     * the Game files section: where games are read from, and how.
-     *
-     * **all-files access is here rather than in App**: App is the look and behaviour of the app, and
-     * how it reaches a game's files is a data concern. the folder manager is the other half of that
-     * same question -- which folders the app may read -- so the two belong together.
-     *
-     * **everything here is about files somebody else already owns**, living elsewhere on the device
-     * and reached by a grant that can be revoked. what the emulator itself writes is User data, which
-     * is a section of its own for that reason.
-     *
-     * **no subsection label.** every row in the section is the section's own subject now, and a
-     * heading repeating the screen's title above the only group on it labels nothing.
-     *
-     * **the folder row is unconditional and the all-files row is not, and that ordering is the point.**
-     * `MANAGE_EXTERNAL_STORAGE` needs API 30 and `minSdk` is 28, so this section builds a list rather
-     * than returning one: an early return on the permission would take the folder manager with it, and
-     * on a device below 30 that is a device with no way to add a game at all.
-     *
-     * the all-files row is an [SettingRow.External] rather than a [SettingRow.Switch] because this app
-     * cannot set it: it is granted in android's own settings and nowhere else, so the row shows the
-     * state and a tap opens the screen that changes it.
-     */
-    /**
      * the Controls section: vibration, the mapping switch, and the four ports it hands input to when
      * off.
      *
@@ -883,6 +861,29 @@ class SettingsSectionActivity : AppCompatActivity() {
         if (!ok) Toast.makeText(this, R.string.controller_mapping_write_failed, Toast.LENGTH_LONG).show()
     }
 
+    /**
+     * the Game files section: where games are read from, and how.
+     *
+     * **all-files access is here rather than in App**: App is the look and behaviour of the app, and
+     * how it reaches a game's files is a data concern. the folder manager is the other half of that
+     * same question -- which folders the app may read -- so the two belong together.
+     *
+     * **everything here is about files somebody else already owns**, living elsewhere on the device
+     * and reached by a grant that can be revoked. what the emulator itself writes is User data, which
+     * is a section of its own for that reason.
+     *
+     * **no subsection label.** every row in the section is the section's own subject now, and a
+     * heading repeating the screen's title above the only group on it labels nothing.
+     *
+     * **the folder row is unconditional and the all-files row is not, and that ordering is the point.**
+     * `MANAGE_EXTERNAL_STORAGE` needs API 30 and `minSdk` is 28, so this section builds a list rather
+     * than returning one: an early return on the permission would take the folder manager with it, and
+     * on a device below 30 that is a device with no way to add a game at all.
+     *
+     * the all-files row is an [SettingRow.External] rather than a [SettingRow.Switch] because this app
+     * cannot set it: it is granted in android's own settings and nowhere else, so the row shows the
+     * state and a tap opens the screen that changes it.
+     */
     private fun gameFilesRows(): List<SettingRow> {
         // **a count rather than the folders themselves.** the build row names one build and the
         // driver row one package, because there is one of each; there is any number of folders, and
