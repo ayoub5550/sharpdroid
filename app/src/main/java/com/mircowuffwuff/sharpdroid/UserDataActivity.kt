@@ -368,6 +368,9 @@ class UserDataActivity : AppCompatActivity() {
         // would report every row back at its default and still run one game differently. they are a
         // file each, so this is not the call above with a wider reach -- it is a second call.
         Settings.forgetEveryGame(this)
+        // **and the controller mapping**, which is a setting kept as a file rather than a preference,
+        // so nothing above reaches it.
+        AppStorage.controllerMapping(filesDir).delete()
         // **and the grants are released rather than merely forgotten.** android caps how many
         // persisted uri permissions an app may hold, so a folder dropped from the list without
         // releasing its grant is one held against that cap forever, by nothing.

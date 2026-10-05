@@ -221,6 +221,8 @@ holding a cover on the game list opens `GameSettingsActivity`: the dump's artwor
 
 **a file per game costs an export nothing.** the Everything archive packs the whole of `shared_prefs/`, so these travel with it and are restored by an import with neither side naming them. what does have to know about them is *Reset all settings*, which clears the app's store and then every game's: a per-game override changes what a launch does, so a reset that left them in place would report every row back at its default and still run one game differently. the same figure on that card counts both.
 
+**the controller mapping is a setting kept as a file**, `files/controller-mapping.json`, so *Reset all settings* deletes it by name beside clearing the stores, and the Everything archive carries it with the rest of `files/`. [`pad.md`](pad.md) has what is in it.
+
 ## the surface
 
 `MainActivity` implements `SurfaceHolder.Callback`, and the callbacks are where everything with a lifetime happens.

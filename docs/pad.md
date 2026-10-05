@@ -145,7 +145,7 @@ a stick axis is its positive direction less its negative one, onto 0..255 by aut
 
 **each port names a large and a small motor** — one of a device's by its index among that device's vibrators, Dolphin's `Motor 0`, or the handheld's own — and **nothing drives them**: with automatic mapping off nothing vibrates, and the launch line says what each named motor resolved to.
 
-the file is the app's setting rather than anything the emulator writes, so it sits beside `user/` rather than in it: Everything's export and import carry it with the rest of `files/`, and Delete everything removes it with the rest.
+the file is the app's setting rather than anything the emulator writes, so it sits beside `user/` rather than in it: Everything's export and import carry it with the rest of `files/`, Delete everything removes it with the rest, and Reset all settings deletes it by name.
 
 ## the two switches
 
