@@ -84,7 +84,7 @@ a d-pad arrives either as four keys or as a hat axis, and both are handled — t
 
 ## the controller mapping
 
-with Automatic controller mapping off, the four ports are driven by **the controller mapping**: any input of any device bound to any control of a port, two devices free to share a port on different controls. it is one JSON file, `files/controller-mapping.json` in the app's internal storage, read once by the process that runs a guest. the app has no screen that writes it; it is written by hand and copied in with `run-as`.
+with Automatic controller mapping off, the four ports are driven by **the controller mapping**: any input of any device bound to any control of a port, two devices free to share a port on different controls. it is one JSON file, `files/controller-mapping.json` in the app's internal storage, read once by the process that runs a guest. Settings → Controls writes it — see [mapping a port](#mapping-a-port) — and a file written by hand and copied in with `run-as` is read the same way.
 
 ```json
 {
@@ -146,18 +146,39 @@ a stick axis is its positive direction less its negative one, onto 0..255 by aut
 
 vendor and product are printed beside the identity although they are not part of it, since they are what tells two models sharing a name apart when a binding reaches the wrong one.
 
-**each port names a large and a small motor** — one of a device's by its index among that device's vibrators, Dolphin's `Motor 0`, or the handheld's own — and **nothing drives them**: with automatic mapping off nothing vibrates, and the launch line says what each named motor resolved to.
+**each port names a large and a small motor** — one of a device's by its index among that device's vibrators, Dolphin's `Motor 0`, or the handheld's own — and a game's rumble on that port drives those two: the large level to the large motor and the small level to the small one. **a motor named more than once runs at the strongest request naming it**, whether both of a port's rows name it or two ports do. a motor whose device is not connected, or past the motors that device has, drives nothing until a change brings it, and the launch line says what each named motor resolved to.
 
 the file is the app's setting rather than anything the emulator writes, so it sits beside `user/` rather than in it: Everything's export and import carry it with the rest of `files/`, Delete everything removes it with the rest, and Reset all settings deletes it by name.
 
+## mapping a port
+
+Settings → Controls draws Port 1 to Port 4 under the Automatic controller mapping switch, greyed while it is on, each naming the devices its bindings use. a port row opens that port's screen — **Eden's headings**: Buttons, D-pad, Left stick and Right stick with each stick's click under it, Triggers, then Vibration with the two motor rows. a binding reads as the device and the input in android's own name for it, `Xbox Wireless Controller #1: Button A`, `Hat Y−`, and says `(not connected)` when that device is not here. a long press on a binding, a motor or a port offers the same Use default question a stored row's does, and puts back nothing bound.
+
+**a tap captures the next input, by Dolphin's rules** — `MotionAlertDialog` and the `InputDetector` behind it in `InputCommon/ControllerInterface/CoreDevice.cpp`. an input is pressed when it passes 0.55 and released when it falls under 0.45; capture ends when the pressed input is released, gives up after three seconds with nothing pressed and ends after five whatever is held. every key is swallowed while the dialog is open and a pointer's motion is not, so a touch still reaches Cancel. a key pressed within 150 ms of an axis is that axis's own echo — a trigger reporting a button as well as its travel — and the axis is taken. **where it differs from Dolphin:**
+
+- **giving up changes nothing.** Dolphin clears the binding on a timeout; here a person who put the controller down keeps what they had, and Clear is a button of its own.
+- **BACK cancels on an ordinary press.** Dolphin can bind back, so it needs a long press to mean cancel; here back is never bound. the volume keys pass to android.
+- **events rather than a poll.** an input only changes with an event, so what Dolphin's 10 ms poll adds is noticing the timeouts, which two delayed posts do.
+- **an input's resting point is not read**, because android sends a resting stick nothing and the settings screens have not been fed every event since the app started as Dolphin's interface has. an input is taken as resting at zero, which a hat and a trigger reporting 0 to 1 always do; an axis centred on zero that arrives past the threshold in its device's first event — a trigger resting at one end of a centred range — is not taken until it has come back. the cost is a stick flicked so hard that its first report is already past half way, which has to be let go and pushed again.
+- **one input per binding.** Dolphin joins inputs pressed together into an expression; here the first pressed wins, and among inputs pressed in the same event the one furthest past the threshold, then the lowest axis. the Odin 3's own L2 moves `LTRIGGER` and `BRAKE` together, and capture takes `LTRIGGER`.
+- **axes come only from a joystick source**, so a touch on the DualSense's touchpad is never mistaken for a stick. Dolphin leaves out only the pointer class.
+
+**the same input may drive several controls**, as the runtime allows, and binding a control replaces whatever drove it.
+
+**the motor rows list None, this device's own motor, and every motor of every connected device** — `DualSense Wireless Controller #1 · Motor 0`, as Dolphin names them — **and picking one buzzes it** for 250 ms at full strength. that buzz is this app's, Dolphin having none: a controller's motors are numbered and not named, and the buzz is how somebody finds the strong one. **a choice whose device is not here stays in the list, marked `(not available right now)`**, because the Odin 3 hands a controller back with its motors after holding a motorless copy of it, and the choice names the controller rather than whichever copy of it is connected.
+
+**the screens number devices afresh on every change**, rather than keeping a number while a device stays connected as a run does, so a `#n` on screen is the `#n` a launch made now would give it: the settings process outlives reconnections that a launch, numbering in device id order, never saw.
+
+**the screens edit the file's own JSON in place** and write the whole of it beside the file before renaming it over, so whatever this app does not understand survives an edit that did not touch it, and a launch reading during a write finds one mapping or the other. **a file this app cannot read greys every port and says why** — made by a newer version, or not readable — rather than offering a screen that would write over it.
+
 ## the two switches
 
-Settings → Controls, both on by default.
+Settings → Controls, both on by default, Controller vibration first: it governs both ways of mapping and belongs to neither, and the port rows sit directly under the switch they depend on.
 
 | | |
 | --- | --- |
-| **Automatic controller mapping** | every connected controller, by button position, merged into port 1. off hands the four ports to the controller mapping, and with no file a run has no controller. **the app's rather than a game's**: it is not drawn on the per-game screen, and the launch reads it from the app's own store, so a per-game store holding it is never consulted |
-| **Controller vibration** | whether a game may vibrate anything at all. with automatic mapping on, a game's rumble drives every connected controller's motors and the device's own; with it off, nothing, since nothing drives the motors the controller mapping names. **overridable per game**, so a mapping set up once for the whole install can still be silenced for one title |
+| **Controller vibration** | whether a game may vibrate anything at all. with automatic mapping on, a game's rumble drives every connected controller's motors and the device's own; with it off, each port's rumble drives the two motors that port names. **overridable per game**, so a mapping set up once for the whole install can still be silenced for one title |
+| **Automatic controller mapping** | every connected controller, by button position, merged into port 1. off hands the four ports to the controller mapping, and with nothing mapped a run has no controller. **the app's rather than a game's**: it is not drawn on the per-game screen, and the launch reads it from the app's own store, so a per-game store holding it is never consulted |
 
 **turning rumble off leaves the pad working**, and the mapping decides where rumble goes rather than whether it does — that is Controller vibration's alone.
 
@@ -179,7 +200,7 @@ the seam sets a level and never says for how long, while a vibrator takes a dura
 
 **the motors are found when a device arrives or leaves**, from the same listener the pad's own state hears, never on a request: asking a device what it can vibrate with is a call into the input service. a controller's motors come from its `VibratorManager` on android 12 and later and its single `Vibrator` below that, and the Odin 3's built-in controls have none, so on that device its own motor is the one that buzzes.
 
-**the seam names two motors and a controller's are numbered rather than named, so under automatic mapping the louder level drives every motor**, the device's single one included. per-trigger vibration and the DualSense adaptive triggers are not forwarded at all: there is no actuator behind either, and an approximation would be indistinguishable from an ordinary rumble at the louder of the two levels. the lightbar is not forwarded for the same reason.
+**the seam names two motors and a controller's are numbered rather than named, so under automatic mapping the louder level drives every motor**, the device's single one included. **under a controller mapping each controller is sent one combined vibration naming each of its motors by vibrator id**, which is the call that addresses one motor alone: a new vibration on an input device replaces the one before it, so a call per motor would leave only the last running, and the per-id vibrator a controller's manager hands out is believed to drive every channel at once on the platform's input path. on the Odin 3 a DualSense's `Motor 0` buzzes alone this way. per-trigger vibration and the DualSense adaptive triggers are not forwarded at all: there is no actuator behind either, and an approximation would be indistinguishable from an ordinary rumble at the louder of the two levels. the lightbar is not forwarded for the same reason.
 
 ### the permission, and what its absence looks like
 

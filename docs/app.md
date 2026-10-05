@@ -142,14 +142,16 @@ a subsection is a label above a run of rows rather than another button press. a 
 | App | Theme, Theme color while Custom is chosen, Fullscreen mode, Estimate loading progress, Resume games on return |
 | Emulation | under a SharpEmu label, SharpEmu build; under a FEXCore label, JIT accuracy and Probe host instructions |
 | Graphics | Internal resolution, and under a Vulkan label, Custom driver and Disk shader cache |
-| Controls | Automatic controller mapping, Controller vibration. a game's own Controls screen draws Controller vibration alone, the mapping being the app's |
+| Controls | Controller vibration, Automatic controller mapping, and under a Controller ports label, Port 1 to Port 4, each opening that port's bindings and motors. a game's own Controls screen draws Controller vibration alone, the mapping being the app's |
 | Game files | Game folders, and All files access where the platform has it |
 | User data | none. the card opens `UserDataActivity` |
 | About | none. the card opens `AboutActivity` |
 
 **two of the seven cards open a screen rather than a list of rows**, and the enum carries that as a class rather than the scene carrying a special case. User data is a manager screen and About is a page; neither is a set of settings, and a list holding one row that opened the real thing would be a screen nobody wanted to be on.
 
-**the two Controls rows are the only ones that reach neither an argument vector nor the guest environment.** every other row here becomes something on the payload's command line or in its environment; these two are read by the process that runs the guest and change what the app does with events it receives and with a request it is handed. [`pad.md`](pad.md) owns what they govern.
+**the Controls rows are the only ones that reach neither an argument vector nor the guest environment.** every other row here becomes something on the payload's command line or in its environment; these are read by the process that runs the guest and change what the app does with events it receives and with a request it is handed. [`pad.md`](pad.md) owns what they govern, and the port screens behind them.
+
+**the port rows are the only rows another row greys out.** while Automatic controller mapping is on, every controller plays on port 1 whatever a port says, so a port screen would be a page of choices that change nothing; greyed rather than hidden, because the mapping stays stored and returns the moment the switch is off. greying is a state every row type has, drawn on the whole row, which is what takes a tap on every row that can be greyed. **the port screens store into a file rather than the preferences**, so their rows carry their own way back: the long press asks the same Use default question and puts back nothing bound.
 
 **only the sections that have rows are shown.** a button opening an empty screen is worse than a button that is not there, because the empty screen looks like a fault in the one that is.
 
@@ -221,7 +223,7 @@ holding a cover on the game list opens `GameSettingsActivity`: the dump's artwor
 
 **a file per game costs an export nothing.** the Everything archive packs the whole of `shared_prefs/`, so these travel with it and are restored by an import with neither side naming them. what does have to know about them is *Reset all settings*, which clears the app's store and then every game's: a per-game override changes what a launch does, so a reset that left them in place would report every row back at its default and still run one game differently. the same figure on that card counts both.
 
-**the controller mapping is a setting kept as a file**, `files/controller-mapping.json`, so *Reset all settings* deletes it by name beside clearing the stores, and the Everything archive carries it with the rest of `files/`. [`pad.md`](pad.md) has what is in it.
+**the controller mapping is a setting kept as a file**, `files/controller-mapping.json`, so *Reset all settings* deletes it by name beside clearing the stores, and the Everything archive carries it with the rest of `files/`. the Settings card counts each port mapping anything as one change, a port rather than a binding, since a fully mapped port is 29 entries and would swamp every other figure on the card. [`pad.md`](pad.md) has what is in it.
 
 ## the surface
 
