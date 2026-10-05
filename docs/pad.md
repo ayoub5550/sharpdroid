@@ -89,15 +89,15 @@ Settings → Controls, both on by default.
 | | |
 | --- | --- |
 | **Automatic controller mapping** | every connected controller, by button position, merged into port 1. off hands input to the port rows, and with none drawn a run has no controller. **the app's rather than a game's**: it is not drawn on the per-game screen, and the launch reads it from the app's own store, so a per-game store holding it is never consulted |
-| **Vibrate handheld motor** | whether a game may drive the motor |
+| **Controller vibration** | whether a game may vibrate anything at all. with automatic mapping on, a game's rumble drives every connected controller's motors and the device's own; with it off, the motors the ports name, and with none drawn nothing vibrates. **overridable per game**, so a mapping set up once for the whole install can still be silenced for one title |
 
-**they are independent, and that is the point of there being two.** somebody playing by touch on a device with a pad in it should still feel a game's haptics, and a controller that misbehaves is a different complaint from a motor that is distracting. turning the mapping off leaves rumble working; turning rumble off leaves the pad working.
+**turning rumble off leaves the pad working**, and the mapping decides where rumble goes rather than whether it does — that is Controller vibration's alone.
 
 **neither becomes a launch argument.** they are read once by the process that runs the guest — which is given to one run and ended with it — and applied to what the app does with events it receives and with a request it is handed. so neither of them can move the vector a launch is made with, and nothing about the host layer's flags changes.
 
 **turning the mapping off releases everything first**, rather than simply going quiet: a button held at that moment would otherwise stay held for the rest of the run, since nothing afterwards processes its release. it also stops *consuming* events, so a pad still reaches the app's own screens and the panel over a running guest stays reachable with a d-pad.
 
-**rumble is gated in the app rather than in the bridge**, so the guest's request still crosses and is still counted as asked for and only the platform call stops. that keeps a run with the motor switched off distinguishable in the log from a run where the game never asked — which is the distinction the two counters exist to preserve.
+**rumble is gated in the app rather than in the bridge**, so the guest's request still crosses and is still counted as asked for and only the platform call stops. that keeps a run with vibration switched off distinguishable in the log from a run where the game never asked — which is the distinction the two counters exist to preserve.
 
 ## rumble, and the thread that delivers it
 
@@ -107,7 +107,9 @@ there is no NDK vibrator, so rumble is a JNI call up into the app — the only t
 
 the seam sets a level and never says for how long, while a vibrator takes a duration and stops by itself, so each request is a short pulse and a game holding rumble on sends more of them.
 
-**android has one actuator and the seam names two motors, so the louder wins.** per-trigger vibration and the DualSense adaptive triggers are not forwarded at all: there is no actuator behind either, and an approximation would be indistinguishable from an ordinary rumble at the louder of the two levels. the lightbar is not forwarded for the same reason.
+**the motors are found when a device arrives or leaves**, from the same listener the pad's own state hears, never on a request: asking a device what it can vibrate with is a call into the input service. a controller's motors come from its `VibratorManager` on android 12 and later and its single `Vibrator` below that, and the Odin 3's built-in controls have none, so on that device its own motor is the one that buzzes.
+
+**the seam names two motors and a controller's are numbered rather than named, so under automatic mapping the louder level drives every motor**, the device's single one included. per-trigger vibration and the DualSense adaptive triggers are not forwarded at all: there is no actuator behind either, and an approximation would be indistinguishable from an ordinary rumble at the louder of the two levels. the lightbar is not forwarded for the same reason.
 
 ### the permission, and what its absence looks like
 

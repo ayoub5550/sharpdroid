@@ -454,10 +454,8 @@ class Settings private constructor(
      * **the key says *automatic*** because the unqualified name belongs to the per-port mappings
      * rather than to the switch above them.
      *
-     * **off does not disable rumble**, which is [vibrateHandheld]'s to decide. the two are separate because a
-     * person who wants to play by touch on a device that has a pad in it should still feel a game's
-     * haptics, and because a controller that misbehaves is a different complaint from a motor that is
-     * distracting.
+     * **it also decides where rumble goes** -- every motor, or the ones the ports name -- and
+     * [controllerVibration] decides whether any does.
      *
      * **neither of these becomes a launch argument.** they are read by the process that runs the
      * guest and applied to what this app does with events it receives and with a request it is
@@ -470,6 +468,27 @@ class Settings private constructor(
             null
         }
         set(value) = prefs.edit().putBoolean(KEY_AUTOMATIC_CONTROLLER_MAPPING, value!!).apply()
+
+    /**
+     * whether a game may vibrate anything at all.
+     *
+     * **one switch over every motor, and what it governs follows the mapping.** with
+     * [automaticControllerMapping] on, a game's rumble drives every connected controller's motors and
+     * this device's own; with it off, the motors the ports name. either way this is the one place to
+     * turn it off, and it is overridable per game, so a mapping set up once for the whole install can
+     * still be silenced for one title.
+     *
+     * gated in the app rather than in the host layer, because the vibrators are the app's: the guest's
+     * request still crosses and is still counted, and what changes is whether the platform is asked.
+     * that keeps a run with this off distinguishable in the log from a run where the game never asked.
+     */
+    var controllerVibration: Boolean?
+        get() = if (prefs.contains(KEY_CONTROLLER_VIBRATION)) {
+            prefs.getBoolean(KEY_CONTROLLER_VIBRATION, true)
+        } else {
+            fallback?.controllerVibration
+        }
+        set(value) = prefs.edit().putBoolean(KEY_CONTROLLER_VIBRATION, value!!).apply()
 
     /**
      * whether the loading screen estimates how far along a boot is, or simply says one is happening.
@@ -545,25 +564,6 @@ class Settings private constructor(
         set(value) = prefs.edit().putBoolean(KEY_HOST_FEATURE_PROBE, value!!).apply()
 
     /**
-     * whether a game may drive **this device's** vibration motor.
-     *
-     * **named for the handheld and not for vibration in general**, because a controller with a motor
-     * of its own is a second answer to "should this rumble" rather than the same one -- and the day
-     * that exists, a setting called simply *vibrate* would have to mean both or be renamed.
-     *
-     * gated in the app rather than in the host layer, because the vibrator is the app's: the guest's
-     * request still crosses and is still counted, and what changes is whether the platform is asked.
-     * that keeps a run with this off distinguishable in the log from a run where the game never asked.
-     */
-    var vibrateHandheld: Boolean?
-        get() = if (prefs.contains(KEY_VIBRATE_HANDHELD)) {
-            prefs.getBoolean(KEY_VIBRATE_HANDHELD, true)
-        } else {
-            fallback?.vibrateHandheld
-        }
-        set(value) = prefs.edit().putBoolean(KEY_VIBRATE_HANDHELD, value!!).apply()
-
-    /**
      * the guest environment these settings contribute, in the order it should be applied.
      *
      * **only what was actually chosen.** an untouched row puts nothing in the map, so the guest's
@@ -613,14 +613,14 @@ class Settings private constructor(
         const val KEY_RENDER_SCALE = "render_scale"
         const val KEY_DRIVER = "driver"
         const val KEY_DISK_SHADER_CACHE = "disk_shader_cache"
-        // **both are named for the narrow thing they govern rather than for their subject**, because
-        // the broad name is the one a later setting will want. per-pad mappings would make a plain
-        // `controller_mapping` the wrong name for the switch that turns automatic mapping on, and a
-        // physical pad's own motor would make a plain `vibrate` ambiguous against this device's.
-        // a stored key cannot be renamed later without either abandoning what people have chosen or
-        // carrying a migration forever, so the cost of getting this wrong is paid once and kept.
+        // **the mapping switch is named for the narrow thing it governs rather than for its subject**,
+        // because the broad name belongs to the per-port mappings under it: a plain
+        // `controller_mapping` would be the wrong name for the switch that turns automatic mapping on.
+        // a stored key cannot be renamed without either abandoning what people have chosen or
+        // carrying a migration forever, so the cost of getting a name wrong is paid once and kept.
         const val KEY_AUTOMATIC_CONTROLLER_MAPPING = "automatic_controller_mapping"
-        const val KEY_VIBRATE_HANDHELD = "vibrate_handheld"
+        // and this one for the whole of vibration, because it governs every motor a game can reach.
+        const val KEY_CONTROLLER_VIBRATION = "controller_vibration"
 
         /** the four the desktop UI offers, as the payload parses them. */
         val RENDER_SCALES = arrayOf("1.0", "0.75", "0.5", "0.25")

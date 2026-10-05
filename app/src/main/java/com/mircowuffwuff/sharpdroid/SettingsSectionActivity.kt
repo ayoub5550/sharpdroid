@@ -604,9 +604,9 @@ class SettingsSectionActivity : AppCompatActivity() {
             perGame = false,
         ),
         SettingRow.Switch(
-            key = Settings.KEY_VIBRATE_HANDHELD,
-            title = R.string.setting_vibrate_handheld,
-            summary = R.string.setting_vibrate_handheld_summary,
+            key = Settings.KEY_CONTROLLER_VIBRATION,
+            title = R.string.setting_controller_vibration,
+            summary = R.string.setting_controller_vibration_summary,
             default = true,
         ),
     )

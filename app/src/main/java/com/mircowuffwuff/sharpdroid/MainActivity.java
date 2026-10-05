@@ -577,8 +577,11 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         //
         // this process is given to one run and ended with it, so reading them once here is reading
         // them for the whole run -- there is no later launch to inherit a stale value.
-        PadState.setEnabled(!Boolean.FALSE.equals(Settings.of(this).getAutomaticControllerMapping()));
-        PadRumble.setEnabled(!Boolean.FALSE.equals(settings.getVibrateHandheld()));
+        boolean automaticMapping =
+                !Boolean.FALSE.equals(Settings.of(this).getAutomaticControllerMapping());
+        PadState.setEnabled(automaticMapping);
+        PadRumble.setAutomatic(automaticMapping);
+        PadRumble.setEnabled(!Boolean.FALSE.equals(settings.getControllerVibration()));
         // and the loading screen's estimate, read here for the same reason and defaulting the same
         // way: an untouched row leaves it on. it is not a launch argument either -- the host layer is
         // asked for boot progress on every launch regardless, since the position reaching the end of
@@ -671,19 +674,25 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
             new android.hardware.input.InputManager.InputDeviceListener() {
                 @Override
                 public void onInputDeviceAdded(int deviceId) {
-                    PadState.onDeviceChanged();
+                    padsChanged();
                 }
 
                 @Override
                 public void onInputDeviceRemoved(int deviceId) {
-                    PadState.onDeviceChanged();
+                    padsChanged();
                 }
 
                 @Override
                 public void onInputDeviceChanged(int deviceId) {
-                    PadState.onDeviceChanged();
+                    padsChanged();
                 }
             };
+
+    /** the pad's state and the motors rumble can reach, both following the devices attached. */
+    private static void padsChanged() {
+        PadState.onDeviceChanged();
+        PadRumble.onDeviceChanged();
+    }
 
     @Override
     protected void onResume() {
@@ -695,7 +704,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         }
         // and a sweep, because anything that changed while this activity was not listening produced no
         // callback to catch up on.
-        PadState.onDeviceChanged();
+        padsChanged();
 
         // **here rather than when the surface comes back**, since a dialog over the game pauses it
         // without taking the surface away, and then no new one ever arrives. a guest that reaches for

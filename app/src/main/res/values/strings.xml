@@ -132,8 +132,8 @@
          described a mapping nobody can configure would be a row lying about itself. -->
     <string name="setting_automatic_controller_mapping">Automatic controller mapping</string>
     <string name="setting_automatic_controller_mapping_summary">Play with a connected physical controller, mapped by button position.</string>
-    <string name="setting_vibrate_handheld">Vibrate handheld motor</string>
-    <string name="setting_vibrate_handheld_summary">Let a game drive this Android device\'s vibration motor.</string>
+    <string name="setting_controller_vibration">Controller vibration</string>
+    <string name="setting_controller_vibration_summary">Let a game drive the vibration motors of your controllers and this Android device.</string>
     <string name="setting_fullscreen">Fullscreen mode</string>
     <string name="setting_fullscreen_summary">Hide the status and navigation bars everywhere. Swipe from an edge to bring them back. A game is always fullscreen.</string>
 

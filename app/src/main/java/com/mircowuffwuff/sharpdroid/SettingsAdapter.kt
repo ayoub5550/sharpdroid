@@ -321,7 +321,7 @@ class SettingsAdapter(
             Settings.KEY_AUTO_RESUME -> settings.autoResume ?: default
             Settings.KEY_STRICT -> settings.strictDynlib ?: default
             Settings.KEY_AUTOMATIC_CONTROLLER_MAPPING -> settings.automaticControllerMapping ?: default
-            Settings.KEY_VIBRATE_HANDHELD -> settings.vibrateHandheld ?: default
+            Settings.KEY_CONTROLLER_VIBRATION -> settings.controllerVibration ?: default
             Settings.KEY_DISK_SHADER_CACHE -> settings.diskShaderCache ?: default
             Settings.KEY_HOST_FEATURE_PROBE -> settings.hostFeatureProbe ?: default
             else -> default
@@ -342,7 +342,7 @@ class SettingsAdapter(
             Settings.KEY_AUTO_RESUME -> settings.autoResume = value
             Settings.KEY_STRICT -> settings.strictDynlib = value
             Settings.KEY_AUTOMATIC_CONTROLLER_MAPPING -> settings.automaticControllerMapping = value
-            Settings.KEY_VIBRATE_HANDHELD -> settings.vibrateHandheld = value
+            Settings.KEY_CONTROLLER_VIBRATION -> settings.controllerVibration = value
             Settings.KEY_DISK_SHADER_CACHE -> settings.diskShaderCache = value
             Settings.KEY_HOST_FEATURE_PROBE -> settings.hostFeatureProbe = value
             else -> Unit
