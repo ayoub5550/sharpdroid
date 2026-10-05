@@ -6,7 +6,6 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import org.json.JSONObject
 import java.io.File
-import java.util.Locale
 
 /**
  * the controller mapping: which input of which device drives which control of which port, for a run
@@ -20,23 +19,25 @@ import java.util.Locale
  * { "version": 1,
  *   "ports": [
  *     { "bindings": {
- *         "cross":         { "device": "2020:0112 #1", "name": "Xbox Wireless Controller",
+ *         "cross":         { "device": { "name": "Xbox Wireless Controller", "number": 1 },
  *                            "key": "KEYCODE_BUTTON_A" },
- *         "left-stick-up": { "device": "2020:0112 #1", "name": "Xbox Wireless Controller",
- *                            "source": "JOYSTICK", "axis": "AXIS_Y", "direction": "-" } },
- *       "large-motor": { "device": "045e:0b13 #1", "name": "Xbox Wireless Controller", "motor": 0 },
+ *         "left-stick-up": { "device": { "name": "Xbox Wireless Controller", "number": 1 },
+ *                            "source": "JOYSTICK", "axis": "AXIS_Y", "direction": "-" },
+ *         "touchpad":      { "device": { "name": "DualSense Wireless Controller",
+ *                                        "role": "touchpad", "number": 1 }, ... } },
+ *       "large-motor": { "device": { "name": "Xbox Wireless Controller", "number": 2 }, "motor": 0 },
  *       "small-motor": "handheld" } ] }
  * ```
+ *
+ * **a device is its name, a role and a number** -- see [identityBase] and [DeviceNumbers] -- and is
+ * written as an object rather than one string, because a name can hold any character and a string
+ * joining it to the rest would need either escaping or a separator some name contains.
  *
  * **an input is spelled the way android spells it**, `KeyEvent.keyCodeToString` and
  * `MotionEvent.axisToString`, with the source as `dumpsys input` prints it. so a file can be written
  * from what the platform reports without a table of names of our own, and those names are constants
  * that never change meaning. an axis carries its source and a direction, as Dolphin's `Axis 1-` does:
  * a device may have the same axis on two sources, and each half of an axis is an input of its own.
- *
- * **`name` is for display only.** what is matched is the identity in `device`, which [identityBase]
- * and [DeviceNumbers] define; a name is stored beside it so that a binding to a device that is not
- * connected can still say what it was.
  *
  * **a file this app cannot read is never rewritten or removed.** an unknown version or a file that
  * is not JSON gives a run with no bindings and a line saying why, and an entry that cannot be read is
@@ -55,7 +56,7 @@ class ControllerMapping private constructor(
      *
      * @param slot the port and the target as one index, `port * PadTarget.COUNT + target`, which is
      *   how [PadState] holds a port's state.
-     * @param device the identity the input belongs to, as [DeviceNumbers] numbers it.
+     * @param device the identity the input belongs to, as [identity] joins it.
      * @param keyCode the key, or [NO_KEY] for an axis.
      * @param source the axis's source, one of `InputDevice.SOURCE_*`. 0 for a key.
      * @param axis the axis, one of `MotionEvent.AXIS_*`. [NO_AXIS] for a key.
@@ -76,7 +77,7 @@ class ControllerMapping private constructor(
      */
     class Motor(val device: String?, val index: Int) {
         override fun toString(): String =
-            if (device == null) "the handheld's motor" else "$device motor $index"
+            if (device == null) "the handheld's motor" else "${describe(device)} motor $index"
     }
 
     companion object {
@@ -210,9 +211,9 @@ class ControllerMapping private constructor(
                 AppLog.w(TAG, "[pad] refused $where: it is not an object")
                 return null
             }
-            val device = json.optString("device")
-            if (device.isEmpty()) {
-                AppLog.w(TAG, "[pad] refused $where: it names no device")
+            val device = deviceOf(json.optJSONObject("device"))
+            if (device == null) {
+                AppLog.w(TAG, "[pad] refused $where: its device is not a name, a number and a known role")
                 return null
             }
             val key = json.optString("key")
@@ -256,41 +257,71 @@ class ControllerMapping private constructor(
                 return Motor(null, 0)
             }
             val json = value as? JSONObject
-            val device = json?.optString("device").orEmpty()
+            val device = deviceOf(json?.optJSONObject("device"))
             val index = json?.optInt("motor", -1) ?: -1
-            if (device.isEmpty() || index < 0) {
+            if (device == null || index < 0) {
                 AppLog.w(TAG, "[pad] refused $where: it is neither \"handheld\" nor a device and a motor")
                 return null
             }
             return Motor(device, index)
         }
 
+        /** a file's device object as an [identity], or null when it is not one. */
+        private fun deviceOf(json: JSONObject?): String? {
+            val name = json?.optString("name").orEmpty()
+            val role = json?.optString("role").orEmpty()
+            val number = json?.optInt("number", 0) ?: 0
+            if (name.isEmpty() || number < 1 || (role.isNotEmpty() && role !in ROLES)) {
+                return null
+            }
+            return identity(name, role, number)
+        }
+
+        /** the roles a device that is not a gamepad can have, in the order [roleOf] tries them. */
+        private val ROLES = listOf("touchpad", "mouse", "keyboard", "other")
+
         /**
-         * a device's identity, short of its number: `vvvv:pppp` from its vendor and product.
+         * a device's identity as one string, which is what bindings are matched by.
          *
-         * **vendor and product rather than android's descriptor or the name**, as Eden does it: the
-         * descriptor is one physical unit in one mode, so a binding would not survive another phone
-         * or a controller switched to another mode, and a name is shared by different models -- two
-         * DualSense generations with different layouts carry the same one.
-         *
-         * **two refinements of ours.** a device that is not a gamepad gets a word for what it is,
-         * `054c:0ce6 touchpad`, because one controller can be several android devices sharing a
-         * vendor and product -- the DualSense is a gamepad, a touchpad and a third for its battery
-         * and lights -- and numbering them together would make `#2` mean another part of the same
-         * controller on one day and a second controller on another. and a device reporting neither
-         * a vendor nor a product, which the built-in keys and jacks commonly do, has nothing to
-         * number among but its name, so the name stands in, quoted, which is Dolphin's identity for
-         * every device.
+         * **joined with a character no name contains** rather than written out as a person reads it, so
+         * that no name, however it is spelled, can make two identities equal. [describe] is the readable
+         * form.
          */
         @JvmStatic
-        fun identityBase(device: InputDevice): String {
-            if (device.vendorId == 0 && device.productId == 0) {
-                return "\"${device.name}\""
-            }
-            val ids = String.format(Locale.ROOT, "%04x:%04x", device.vendorId, device.productId)
-            val role = roleOf(device.sources) ?: return ids
-            return "$ids $role"
+        fun identity(name: String, role: String, number: Int): String = "$name\u0000$role\u0000$number"
+
+        /** an identity as a person reads it: `"Xbox Wireless Controller" #2`, `"…" touchpad #1`. */
+        @JvmStatic
+        fun describe(identity: String): String {
+            val parts = identity.split('\u0000')
+            if (parts.size != 3) return identity
+            val role = if (parts[1].isEmpty()) "" else " ${parts[1]}"
+            return "\"${parts[0]}\"$role #${parts[2]}"
         }
+
+        /**
+         * a device's identity, short of its number: its name, and a role when it is not a gamepad.
+         *
+         * **the name, as Dolphin identifies a device**, rather than vendor and product as Eden does
+         * or android's descriptor. a handheld can take a connected controller over and put a virtual
+         * copy of its own in its place -- the AYN Odin 3 does, for a Bluetooth Xbox or DualSense --
+         * and the copy keeps the controller's name but not its vendor, product or Bluetooth address.
+         * every external controller there shares one vendor and product and one descriptor, so only
+         * the name still tells an Xbox from a DualSense, and only the name still matches the same
+         * controller when nothing has replaced it. the descriptor would also make a controller
+         * switched to another mode, or a mapping taken to another phone, a new device.
+         *
+         * what it costs is that two models sharing a name share bindings, and that a controller named
+         * differently over USB and over Bluetooth is two devices.
+         *
+         * **the role is ours.** one controller can be several android devices with one name -- the
+         * DualSense's touchpad is a device of its own, named as its gamepad is -- and numbering them
+         * together would make `#2` mean another part of the same controller on one day and a second
+         * controller on another.
+         */
+        @JvmStatic
+        fun identityBase(device: InputDevice): String =
+            "${device.name}\u0000${roleOf(device.sources).orEmpty()}"
 
         /** what a device is when it is not a gamepad, or null when it is one. the first match wins. */
         private fun roleOf(sources: Int): String? = when {
@@ -307,14 +338,16 @@ class ControllerMapping private constructor(
 }
 
 /**
- * the identity of every connected device, number included: `2020:0112 #1`.
+ * the identity of every connected device, number included: `"Xbox Wireless Controller" #2`.
  *
- * **Dolphin's numbering** (`ControllerInterface::AddDevice`): a device takes the lowest number no
- * connected device of the same identity holds, and keeps it for as long as it stays connected. so when
- * #1 of two identical controllers drops out, #2 is still #2 and goes on driving what #2 is bound to,
- * and the next one to connect takes #1. Eden's position among every controller would instead move a
- * binding whenever a different controller connected first. the devices already present when this is
- * first asked are numbered in the order android gave them ids, which is the order they connected.
+ * **a device takes the lowest number no connected device of the same name and role holds, and keeps
+ * it for as long as it stays connected** -- Dolphin's rule in `ControllerInterface::AddDevice` for a
+ * device with no controller number. so when #1 of two identical controllers drops out, #2 is still #2
+ * and goes on driving what #2 is bound to, and the next one to connect takes #1. Dolphin numbers a
+ * gamepad by android's controller number instead, which counts every connected gamepad, and Eden by
+ * position among them all: either moves a binding whenever a different controller connects first.
+ * the devices already present when this is first asked are numbered in the order android gave them
+ * ids, which is the order they connected.
  *
  * virtual devices are left out: they are what `adb shell input` and the on-screen keyboard inject
  * from, and nothing a person holds.
@@ -347,9 +380,9 @@ class DeviceNumbers {
             if (bases.get(id) == base) continue
             identities.remove(id)
             var number = 1
-            while (indexOf("$base #$number") >= 0) number++
+            while (indexOf("$base\u0000$number") >= 0) number++
             bases.put(id, base)
-            identities.put(id, "$base #$number")
+            identities.put(id, "$base\u0000$number")
             changed = true
         }
         return changed

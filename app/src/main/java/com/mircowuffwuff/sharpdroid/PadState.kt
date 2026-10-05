@@ -688,8 +688,12 @@ object PadState {
         val after = numbers.deviceIds()
         for (id in after) {
             if (before != null && before.contains(id)) continue
-            val name = InputDevice.getDevice(id)?.name
-            AppLog.i(TAG, "[pad] ${numbers.identityOf(id)} is device $id, $name")
+            val identity = numbers.identityOf(id) ?: continue
+            // vendor and product beside it, which are not part of the identity and are what tells
+            // two models sharing a name apart when a binding goes to the wrong one.
+            val device = InputDevice.getDevice(id)
+            AppLog.i(TAG, String.format(Locale.ROOT, "[pad] %s is device %d, %04x:%04x",
+                ControllerMapping.describe(identity), id, device?.vendorId ?: 0, device?.productId ?: 0))
         }
         if (before != null) {
             for (id in before) {

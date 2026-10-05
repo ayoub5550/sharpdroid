@@ -92,13 +92,13 @@ with Automatic controller mapping off, the four ports are driven by **the contro
   "ports": [
     {
       "bindings": {
-        "cross":         { "device": "2020:0112 #1", "name": "Xbox Wireless Controller", "key": "KEYCODE_BUTTON_A" },
-        "left-stick-up": { "device": "2020:0112 #1", "name": "Xbox Wireless Controller",
+        "cross":         { "device": { "name": "Xbox Wireless Controller", "number": 1 }, "key": "KEYCODE_BUTTON_A" },
+        "left-stick-up": { "device": { "name": "Xbox Wireless Controller", "number": 1 },
                            "source": "JOYSTICK", "axis": "AXIS_Y", "direction": "-" },
-        "l2":            { "device": "2020:0112 #1", "name": "Xbox Wireless Controller",
+        "l2":            { "device": { "name": "Xbox Wireless Controller", "number": 1 },
                            "source": "JOYSTICK", "axis": "AXIS_LTRIGGER", "direction": "+" }
       },
-      "large-motor": { "device": "045e:0b13 #1", "name": "Xbox Wireless Controller", "motor": 0 },
+      "large-motor": { "device": { "name": "Xbox Wireless Controller", "number": 2 }, "motor": 0 },
       "small-motor": "handheld"
     },
     { "bindings": {} }, { "bindings": {} }, { "bindings": {} }
@@ -110,11 +110,11 @@ with Automatic controller mapping off, the four ports are driven by **the contro
 
 **an input is spelled as android spells it**: a key by its `KeyEvent` name, an axis by its `MotionEvent` name with the source `dumpsys input` prints for it and a direction, `+` or `-`. an axis carries its source because a device may have the same axis on two sources, and each half of an axis is an input of its own, as Dolphin's `Axis 1-` is. `KEYCODE_BACK` and the volume keys are refused: back always opens the panel and the volume keys are the device's. the DualSense's touchpad click is a pointer button rather than a key, and the file has no way to name one.
 
-**a device is its vendor and product, a role and a number**, and the `name` stored beside it is for display only, so that a binding to a device that is not connected can still say what it was.
+**a device is its name, a role and a number.**
 
-- **vendor and product, as Eden identifies a device**, rather than android's descriptor or the name. the descriptor is one physical unit in one mode, so a binding would not survive another phone or a controller switched to another mode, and a name is shared by different models — two DualSense generations with different layouts carry the same one. a device reporting neither a vendor nor a product, which built-in keys and jacks commonly do, has nothing to number among but its name, so the name stands in, quoted.
-- **a role for a device that is not a gamepad** — `touchpad`, `mouse`, `keyboard` or `other` — because one controller can be several android devices sharing a vendor and product: the DualSense's touchpad is a device of its own.
-- **a number among identical devices**: the lowest no connected one holds, kept for as long as the device stays connected, so when #1 of two identical controllers drops out #2 goes on driving what #2 is bound to. that is Dolphin's rule in `ControllerInterface::AddDevice`. Eden's position among every controller would move a binding whenever a different controller connects first. the devices present at launch are numbered in the order they connected.
+- **the name, as Dolphin identifies a device**, rather than vendor and product, as Eden does, or android's descriptor. a handheld can take a connected controller over and put a virtual copy of its own in its place — the AYN Odin 3 does, for a Bluetooth Xbox or DualSense — and the copy keeps the controller's name but neither its vendor and product nor its Bluetooth address. every external controller there then shares one vendor and product and one descriptor, so only the name still tells an Xbox from a DualSense, and only the name still matches the same controller when nothing has replaced it. the descriptor would also make a controller switched to another mode, or a mapping taken to another phone, a new device. what the name costs is that two models sharing a name share bindings, and that a controller named differently over USB and over Bluetooth is two devices.
+- **a role for a device that is not a gamepad** — `touchpad`, `mouse`, `keyboard` or `other` — because one controller can be several android devices with one name: the DualSense's touchpad is a device of its own, named as its gamepad is.
+- **a number among devices of the same name and role**: the lowest no connected one holds, kept for as long as the device stays connected, so when #1 of two identical controllers drops out #2 goes on driving what #2 is bound to. that is Dolphin's rule for a device with no controller number. android's controller number, which Dolphin uses for a gamepad, counts every connected gamepad, and Eden's position counts every controller, so either moves a binding whenever a different controller connects first. the devices present at launch are numbered in the order they connected.
 
 **how an input drives a control:**
 
@@ -137,11 +137,14 @@ a stick axis is its positive direction less its negative one, onto 0..255 by aut
 **every launch says what the mapping resolved to**, which is what tells "no file", "a file whose devices are not connected" and "a file that resolved and a game that ignores it" apart:
 
 ```
-[pad] controller mapping version 1 from …/files/controller-mapping.json: 24 bindings, 1 motors, 0 refused
-[pad] 2020:0112 #1 is device 8, Xbox Wireless Controller
-[pad] 2020:0111 mouse #1 is device 9, ODIN Station Virtual Mouse
+[pad] controller mapping version 1 from …/files/controller-mapping.json: 48 bindings, 2 motors, 0 refused
+[pad] "Xbox Wireless Controller" #1 is device 8, 2020:0112
+[pad] "DualSense Wireless Controller" touchpad #1 is device 27, 054c:0ce6
+[pad] "Xbox Wireless Controller" #2 is device 29, 045e:0b13
 [pad] port 1: 24 of 24 bindings on a connected device. large motor none, small motor the handheld's motor
 ```
+
+vendor and product are printed beside the identity although they are not part of it, since they are what tells two models sharing a name apart when a binding reaches the wrong one.
 
 **each port names a large and a small motor** — one of a device's by its index among that device's vibrators, Dolphin's `Motor 0`, or the handheld's own — and **nothing drives them**: with automatic mapping off nothing vibrates, and the launch line says what each named motor resolved to.
 
