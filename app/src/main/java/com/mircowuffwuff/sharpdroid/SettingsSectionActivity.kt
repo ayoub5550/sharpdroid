@@ -653,8 +653,8 @@ class SettingsSectionActivity : AppCompatActivity() {
      * state and a tap opens the screen that changes it.
      */
     /**
-     * the Controls section: the mapping switch, the four ports it hands input to when off, and
-     * vibration.
+     * the Controls section: vibration, the mapping switch, and the four ports it hands input to when
+     * off.
      *
      * **both switches are on by default, and every row here is read by the process that runs the
      * guest rather than turned into a launch argument.** that is the difference between these and
@@ -662,16 +662,23 @@ class SettingsSectionActivity : AppCompatActivity() {
      * line, while these govern what this app does with events it receives and with a request it is
      * handed -- so nothing is passed, and none of them can move the vector a launch is made with.
      *
-     * **the ports sit under the switch they depend on**, greyed while it is on, and vibration under a
-     * heading of its own below them: it governs both ways of mapping, so it belongs to neither.
+     * **vibration leads, because it governs both ways of mapping and belongs to neither**, and the
+     * ports sit directly under the switch they depend on, greyed while it is on. the two switches
+     * share no heading: a label over the first rows of a screen would repeat the screen's own name.
      *
-     * **the mapping switch and the ports are the app's, and a game's screen leaves them out**, headings
+     * **the mapping switch and the ports are the app's, and a game's screen leaves them out**, heading
      * included, which leaves it the vibration row alone. a controller mapping is set up for the
      * controllers a person owns rather than for a title, and the launch reads it from the app's own
      * store and file. what a mapping set up once may still want for one title is silence.
      */
     private fun controlsRows(): List<SettingRow> {
         val rows = mutableListOf<SettingRow>(
+            SettingRow.Switch(
+                key = Settings.KEY_CONTROLLER_VIBRATION,
+                title = R.string.setting_controller_vibration,
+                summary = R.string.setting_controller_vibration_summary,
+                default = true,
+            ),
             SettingRow.Switch(
                 key = Settings.KEY_AUTOMATIC_CONTROLLER_MAPPING,
                 title = R.string.setting_automatic_controller_mapping,
@@ -687,13 +694,6 @@ class SettingsSectionActivity : AppCompatActivity() {
             rows += SettingRow.Header(R.string.settings_group_controller_ports, perGame = false)
             for (port in 0 until ControllerMapping.PORTS) rows += portRow(port, automatic)
         }
-        rows += SettingRow.Header(R.string.settings_group_vibration, perGame = false)
-        rows += SettingRow.Switch(
-            key = Settings.KEY_CONTROLLER_VIBRATION,
-            title = R.string.setting_controller_vibration,
-            summary = R.string.setting_controller_vibration_summary,
-            default = true,
-        )
         return rows
     }
 
