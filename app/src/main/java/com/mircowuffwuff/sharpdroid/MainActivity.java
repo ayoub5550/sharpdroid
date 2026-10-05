@@ -632,8 +632,13 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         // press are taken here and the release does the resuming, so the game never sees an A it was
         // not running for. only with the panel closed: with it open, the panel's own button is the
         // way back.
+        //
+        // **a cancelled release resumes nothing.** android cancels every key still held when the
+        // window loses focus, and the window losing focus is the app being left -- which is what
+        // just paused the game. resuming on that release would run the game behind whatever the
+        // person went to.
         if (paused && !overlay.isOpen() && isResumeKey(event.getKeyCode())) {
-            if (event.getAction() == KeyEvent.ACTION_UP) {
+            if (event.getAction() == KeyEvent.ACTION_UP && !event.isCanceled()) {
                 resume();
             }
             return true;
