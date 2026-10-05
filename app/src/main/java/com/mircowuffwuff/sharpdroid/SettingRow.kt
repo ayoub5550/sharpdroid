@@ -26,6 +26,16 @@ sealed class SettingRow {
     open val key: String? = null
 
     /**
+     * whether this row is drawn when its section is opened for one game.
+     *
+     * **a row left off the per-game screen is the app's rather than a title's**, so whatever reads
+     * it reads the app's own store: a setting no game can override has nothing to fall back from.
+     * true for every row that does not say otherwise, which is what lets a section be shared by the
+     * two screens with nothing else telling them apart.
+     */
+    open val perGame: Boolean = true
+
+    /**
      * a divider with a label, for a subsection inside a section.
      *
      * **a label above a run of rows, never another button press.** a subsection is a grouping and
@@ -44,6 +54,7 @@ sealed class SettingRow {
         val title: Int,
         val summary: Int,
         val default: Boolean,
+        override val perGame: Boolean = true,
     ) : SettingRow()
 
     /**

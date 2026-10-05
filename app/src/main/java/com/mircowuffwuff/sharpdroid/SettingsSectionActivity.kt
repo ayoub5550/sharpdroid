@@ -218,6 +218,10 @@ class SettingsSectionActivity : AppCompatActivity() {
      * hand-written intent still can, and an empty list is the same answer the section guard in
      * [onCreate] gives a name that is not a section at all.
      *
+     * **a section a game does have can still hold a row that is the app's**, and that row says so
+     * itself through [SettingRow.perGame]: a game's screen draws the section without it, so one
+     * section serves both screens and nothing else here tells them apart.
+     *
      * [colourRow] is whether the seed colour row is wanted, and defaults to what the stored theme
      * says -- which is the right answer everywhere except the one layout a theme change is being
      * animated across, where the list has to be built as it stood before the change so that the
@@ -225,17 +229,20 @@ class SettingsSectionActivity : AppCompatActivity() {
      */
     private fun rows(
         colourRow: Boolean = Theme.chosen(this) == Settings.THEME_CUSTOM,
-    ): List<SettingRow> = when (section) {
-        SettingsActivity.Section.APP -> if (game == null) appRows(colourRow) else emptyList()
-        SettingsActivity.Section.EMULATION -> emulationRows()
-        SettingsActivity.Section.JIT_ACCURACY -> jitAccuracyRows()
-        SettingsActivity.Section.GRAPHICS -> graphicsRows()
-        SettingsActivity.Section.CONTROLS -> controlsRows()
-        SettingsActivity.Section.GAME_FILES -> if (game == null) gameFilesRows() else emptyList()
-        // User data is a screen of its own, so its card never opens this activity. a hand-written
-        // intent still can, and an empty list is what it gets - the same answer the section guard in
-        // onCreate gives a name that is not a section at all.
-        SettingsActivity.Section.USER_DATA -> emptyList()
+    ): List<SettingRow> {
+        val all = when (section) {
+            SettingsActivity.Section.APP -> if (game == null) appRows(colourRow) else emptyList()
+            SettingsActivity.Section.EMULATION -> emulationRows()
+            SettingsActivity.Section.JIT_ACCURACY -> jitAccuracyRows()
+            SettingsActivity.Section.GRAPHICS -> graphicsRows()
+            SettingsActivity.Section.CONTROLS -> controlsRows()
+            SettingsActivity.Section.GAME_FILES -> if (game == null) gameFilesRows() else emptyList()
+            // User data is a screen of its own, so its card never opens this activity. a
+            // hand-written intent still can, and an empty list is what it gets - the same answer the
+            // section guard in onCreate gives a name that is not a section at all.
+            SettingsActivity.Section.USER_DATA -> emptyList()
+        }
+        return if (game == null) all else all.filter { it.perGame }
     }
 
     private fun appRows(colourRow: Boolean): List<SettingRow> {
