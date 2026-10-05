@@ -5,6 +5,7 @@ import android.util.SparseArray
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
+import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -470,6 +471,16 @@ object PadState {
         this.mapping = mapping
     }
 
+    /**
+     * whether a controller mapping's every push is printed -- `--ez tracepad`, beside the host layer's
+     * trace of every read.
+     *
+     * **the reads alone cannot show a port the payload does not poll**, and a payload reading the
+     * contract 3 format polls port 1 and nothing else. this is what shows the other three. off by
+     * default, and costs nothing then; on, a line per push, which is a line per changed control.
+     */
+    @JvmStatic
+    var tracing = false
 
     /**
      * a key, under a controller mapping. consumed only when it is bound: an unbound press goes on to
@@ -654,6 +665,11 @@ object PadState {
             sent[s + 7] = connected
             HostLayer.nativeSetPadState(
                 port, buttons, leftX, leftY, rightX, rightY, leftTrigger, rightTrigger, connected == 1)
+            if (tracing) {
+                AppLog.i(TAG, String.format(Locale.ROOT,
+                    "[pad] pushed port %d: buttons=0x%05x sticks=%d,%d/%d,%d triggers=%d,%d connected=%d",
+                    port + 1, buttons, leftX, leftY, rightX, rightY, leftTrigger, rightTrigger, connected))
+            }
         }
     }
 

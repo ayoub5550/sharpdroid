@@ -134,7 +134,8 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     /** {@code --ez tracefiles}, counting the guest's file access under the game directory. */
     private boolean traceFiles;
     /**
-     * {@code --ez tracepad}, printing every pad poll and every rumble request.
+     * {@code --ez tracepad}, printing every pad poll and every rumble request, and under a
+     * controller mapping every port pushed.
      *
      * <p>chatty by the standards of the others: the emulator samples the pad up to a thousand times a
      * second per polling thread, so this is for one question at a time and not for a whole run.
@@ -585,6 +586,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         if (!automaticMapping) {
             PadState.useMapping(ControllerMapping.read(AppStorage.controllerMapping(getFilesDir())));
         }
+        PadState.setTracing(tracePad);
         PadRumble.setAutomatic(automaticMapping);
         PadRumble.setEnabled(!Boolean.FALSE.equals(settings.getControllerVibration()));
         // and the loading screen's estimate, read here for the same reason and defaulting the same

@@ -201,7 +201,7 @@ and the run summary counts reads, reads that found a pad, **rumbles asked for an
 | | |
 | --- | --- |
 | `--pad` | enables the bridge. **off by default**, in the shape `--vulkan` and `--audio` have: without it a poll is refused, the payload reports no pad, and the run is the one it was before this part existed |
-| `--trace-pad` | every poll, every rumble asked for, and every rumble delivered with whether the app took it. chatty — up to a thousand lines a second per polling thread, so it is for one question at a time |
+| `--trace-pad` | every poll, every rumble asked for, and every rumble delivered with whether the app took it. the app's `--ez tracepad`, which passes this flag, also prints every port the controller mapping pushes, which is what shows a port the payload never polls. chatty — up to a thousand lines a second per polling thread, so it is for one question at a time |
 | `--pad-selftest` | **one fabricated rumble at full strength on each port in turn when the guest first polls**, 700 ms apart. it exists because the two directions fail independently and an ordinary run exercises only one: a game that polls proves the read path continuously, while rumble is proven by nothing at all unless the title happens to vibrate. every port rather than only those with a pad, because at the first poll the app may not have reported its pads yet. each one announces itself and its port in the log, so a buzz can never be mistaken for a game's own |
 
 the app exposes all three as launch extras — `--ez tracepad`, `--ez padselftest` — and passes `--pad` on every launch.
