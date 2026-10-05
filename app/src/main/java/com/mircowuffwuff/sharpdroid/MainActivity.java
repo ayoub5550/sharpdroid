@@ -570,9 +570,14 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         // request it is handed, so the argument vector is untouched by either. an untouched row is
         // null and both default to on.
         //
+        // **the mapping switch comes out of the app's own store**, the way the App section's rows
+        // below do: a controller mapping is the app's rather than a title's and does not fall back,
+        // so asking this game's store would find nothing and read as untouched. vibration is a row a
+        // game may override, so it is asked of `settings`.
+        //
         // this process is given to one run and ended with it, so reading them once here is reading
         // them for the whole run -- there is no later launch to inherit a stale value.
-        PadState.setEnabled(!Boolean.FALSE.equals(settings.getAutomaticControllerMapping()));
+        PadState.setEnabled(!Boolean.FALSE.equals(Settings.of(this).getAutomaticControllerMapping()));
         PadRumble.setEnabled(!Boolean.FALSE.equals(settings.getVibrateHandheld()));
         // and the loading screen's estimate, read here for the same reason and defaulting the same
         // way: an untouched row leaves it on. it is not a launch argument either -- the host layer is
@@ -580,11 +585,10 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         // its table is what tells this activity the guest has drawn and is what takes the loading
         // screen down. what this governs is only whether the bar is drawn against a prediction.
         //
-        // **out of the app's own store rather than out of `settings`, which is the one row here that
-        // is asked that way.** `settings` is this game's store with the app's behind it, and an App
-        // section row does not fall back -- so asking it would find nothing in the game's file, get
-        // null, and read as untouched however the switch is actually set. every other row this
-        // activity reads is one a game may override; this one is the app's, like the theme.
+        // **out of the app's own store rather than out of `settings`**, like the mapping switch above.
+        // `settings` is this game's store with the app's behind it, and an App section row does not
+        // fall back -- so asking it would find nothing in the game's file, get null, and read as
+        // untouched however the switch is actually set. this one is the app's, like the theme.
         loadingEstimate = !Boolean.FALSE.equals(Settings.of(this).getLoadingEstimate());
         // and Resume games on return, the App section's too and asked the same way, off unless it was
         // turned on.

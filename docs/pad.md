@@ -88,7 +88,7 @@ Settings → Controls, both on by default.
 
 | | |
 | --- | --- |
-| **Automatic controller mapping** | whether a controller reaches the guest at all. named for a wider scope than it has, and currently governing the whole of controller input, which the row's own summary says: there is one mapping, it is by button position, and there are no ports to be automatic about yet |
+| **Automatic controller mapping** | every connected controller, by button position, merged into port 1. off hands input to the port rows, and with none drawn a run has no controller. **the app's rather than a game's**: it is not drawn on the per-game screen, and the launch reads it from the app's own store, so a per-game store holding it is never consulted |
 | **Vibrate handheld motor** | whether a game may drive the motor |
 
 **they are independent, and that is the point of there being two.** somebody playing by touch on a device with a pad in it should still feel a game's haptics, and a controller that misbehaves is a different complaint from a motor that is distracting. turning the mapping off leaves rumble working; turning rumble off leaves the pad working.

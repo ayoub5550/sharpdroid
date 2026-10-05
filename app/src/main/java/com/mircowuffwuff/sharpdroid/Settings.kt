@@ -49,8 +49,8 @@ import java.io.File
  * game that overrides nothing is the global configuration exactly. **the FEXCore configuration is
  * the one that is more than a per-key answer** -- a rung and the knobs overriding it are one thing
  * between them, and [fexOverrides] carries the rule that joins the two levels. what does **not** fall back is the
- * App section -- a theme or a fullscreen mode is the app's rather than a title's, and a property that
- * fell back would imply a per-game one exists.
+ * App section and [automaticControllerMapping] -- a theme, a fullscreen mode or a controller mapping is
+ * the app's rather than a title's, and a property that fell back would imply a per-game one exists.
  *
  * @param fallback the store consulted when this one holds no answer, or null for the global store.
  */
@@ -440,15 +440,19 @@ class Settings private constructor(
     // Controls
 
     /**
-     * whether a connected controller reaches the guest at all.
+     * whether controllers reach the guest through the app's own automatic mapping: every connected
+     * controller, by button position, merged into port 1.
      *
-     * **named for what it will govern and currently governing the whole of controller input**, which
-     * is the honest state of it rather than a shortcut: there is one mapping, it is by button
-     * position, and there are no port rows to be automatic about -- so until there are, the switch is
-     * input on or off. the row's own summary says exactly that.
+     * **off hands controller input to the port rows**, which is to say to nothing while there are none
+     * to hand it to: a run with this off has no controller. the row's own summary says what on does.
      *
-     * **the key says *automatic* for the same reason.** per-pad mappings are what the port rows will
-     * store, so the unqualified name belongs to them rather than to the switch above them.
+     * **the app's rather than a game's, so it does not fall back.** a mapping is set up for the
+     * controllers a person owns rather than for a title, and the launch reads this out of the app's
+     * own store the way it reads the App section -- so a per-game store holding this key is never
+     * consulted, and the per-game screen does not draw the row.
+     *
+     * **the key says *automatic*** because the unqualified name belongs to the per-port mappings
+     * rather than to the switch above them.
      *
      * **off does not disable rumble**, which is [vibrateHandheld]'s to decide. the two are separate because a
      * person who wants to play by touch on a device that has a pad in it should still feel a game's
@@ -463,7 +467,7 @@ class Settings private constructor(
         get() = if (prefs.contains(KEY_AUTOMATIC_CONTROLLER_MAPPING)) {
             prefs.getBoolean(KEY_AUTOMATIC_CONTROLLER_MAPPING, true)
         } else {
-            fallback?.automaticControllerMapping
+            null
         }
         set(value) = prefs.edit().putBoolean(KEY_AUTOMATIC_CONTROLLER_MAPPING, value!!).apply()
 

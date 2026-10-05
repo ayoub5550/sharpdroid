@@ -586,10 +586,14 @@ class SettingsSectionActivity : AppCompatActivity() {
      * what this app does with events it receives and with a request it is handed -- so nothing is
      * passed, and neither of them can move the vector a launch is made with.
      *
-     * **there are no port rows under the mapping switch yet**, which is why that switch is currently
-     * the whole of controller input rather than a choice between mappings. the row's own summary says
-     * so; a switch that silently meant something other than its label is what a settings screen must
-     * never be.
+     * **the mapping row is the app's, and a game's screen leaves it out.** a controller mapping is set
+     * up for the controllers a person owns rather than for a title, and the launch reads it from the
+     * app's own store. what a mapping set up once may still want for one title is silence, which is
+     * the vibration row.
+     *
+     * **there are no port rows under the mapping switch**, which is why turning it off leaves a run
+     * with no controller at all. the row's own summary says what on does; a switch that silently meant
+     * something other than its label is what a settings screen must never be.
      */
     private fun controlsRows(): List<SettingRow> = listOf(
         SettingRow.Switch(
@@ -597,6 +601,7 @@ class SettingsSectionActivity : AppCompatActivity() {
             title = R.string.setting_automatic_controller_mapping,
             summary = R.string.setting_automatic_controller_mapping_summary,
             default = true,
+            perGame = false,
         ),
         SettingRow.Switch(
             key = Settings.KEY_VIBRATE_HANDHELD,
