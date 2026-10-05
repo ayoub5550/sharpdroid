@@ -265,7 +265,7 @@ class SettingsSectionActivity : AppCompatActivity() {
 
     /**
      * a device arriving, leaving or changing, while a port screen is in front: its rows say which
-     * bound devices are connected, and that moves with the devices.
+     * bound devices are connected and its motor rows what can buzz, and both move with the devices.
      * the Controls rows name devices from the file alone, so that screen does not listen.
      */
     private val devices = object : InputManager.InputDeviceListener {
@@ -714,6 +714,8 @@ class SettingsSectionActivity : AppCompatActivity() {
             unwritable == MappingFile.Unwritable.UNREADABLE ->
                 getString(R.string.controller_mapping_unreadable)
             devices.isNotEmpty() -> devices.joinToString(", ") { ControllerMapping.label(it) }
+            // a port naming nothing but this device's own motor.
+            inUse -> getString(R.string.controller_motor_handheld)
             else -> getString(R.string.controller_port_empty)
         }
         return SettingRow.Screen(
@@ -733,18 +735,22 @@ class SettingsSectionActivity : AppCompatActivity() {
     }
 
     /**
-     * one controller port: a row per target under Eden's headings.
+     * one controller port: a row per target under Eden's headings, then the two motors.
      *
      * **a stick's click sits under its stick**, as Eden puts it, rather than among the buttons: it is
      * pressed with the thumb that is already on the stick, and that is where somebody mapping one
      * looks for it.
      */
     private fun portRows(): List<SettingRow> {
+        val present = PadMotors.present(this, numbers)
         val rows = mutableListOf<SettingRow>()
         for ((group, targets) in PORT_LAYOUT) {
             rows += SettingRow.Header(group)
             for ((name, title) in targets) rows += bindingRow(PadTarget.NAMES.indexOf(name), title, group)
         }
+        rows += SettingRow.Header(R.string.settings_group_vibration)
+        rows += motorRow(0, present)
+        rows += motorRow(1, present)
         return rows
     }
 
@@ -795,6 +801,74 @@ class SettingsSectionActivity : AppCompatActivity() {
                 },
             ).show()
         }
+    }
+
+    /**
+     * one of a port's two motors: which one a game's large or small rumble drives, or none.
+     *
+     * [present] is every motor connected now, read once for the two rows.
+     */
+    private fun motorRow(row: Int, present: List<ControllerMapping.Motor>): SettingRow {
+        val motor = mapping.motor(port, row)
+        val id = "motor-$row"
+        val title = if (row == 0) R.string.controller_motor_large else R.string.controller_motor_small
+        return SettingRow.Screen(
+            key = null,
+            title = title,
+            summary = if (row == 0) {
+                R.string.controller_motor_large_summary
+            } else {
+                R.string.controller_motor_small_summary
+            },
+            value = motor?.let { motorLabel(it, it in present) }
+                ?: getString(R.string.controller_motor_none),
+            chosen = motor != null,
+            enabled = mapping.unwritable == null,
+            id = id,
+            reset = { wrote(mapping.setMotor(port, row, null)) },
+        ) { pickMotor(row, title, id) }
+    }
+
+    /**
+     * the motor list: None, every motor here now, and the one this row names if it is not here --
+     * kept rather than dropped, since the Odin hands a swapped controller back with its motors, and
+     * the choice names the controller rather than whichever copy of it is connected.
+     *
+     * **picking one buzzes it**, which is this app's addition to Dolphin's list: a controller's motors
+     * are numbered and not named, and the buzz is how somebody finds out which is the strong one. the
+     * list closes on the pick, Eden's shape for a single choice.
+     */
+    private fun pickMotor(row: Int, title: Int, id: String) {
+        val present = PadMotors.present(this, numbers)
+        val stored = mapping.motor(port, row)
+        val choices = ArrayList<ControllerMapping.Motor?>()
+        choices.add(null)
+        choices.addAll(present)
+        if (stored != null && stored !in present) choices.add(stored)
+        val labels = choices.map {
+            if (it == null) getString(R.string.controller_motor_none) else motorLabel(it, it in present)
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle(title)
+            .setSingleChoiceItems(labels.toTypedArray(), choices.indexOf(stored)) { dialog, which ->
+                val motor = choices[which]
+                wrote(mapping.setMotor(port, row, motor))
+                if (motor != null && motor in present) PadMotors.buzz(this, motor, numbers)
+                dialog.dismiss()
+                redraw(id)
+            }
+            .show()
+    }
+
+    /** a motor as a row and a list say it, marked when it is not connected right now. */
+    private fun motorLabel(motor: ControllerMapping.Motor, here: Boolean): String {
+        val device = motor.device
+        val name = if (device == null) {
+            getString(R.string.controller_motor_handheld)
+        } else {
+            getString(R.string.controller_motor, ControllerMapping.label(device), motor.index)
+        }
+        return if (here) name else getString(R.string.controller_motor_unavailable, name)
     }
 
     /** the list again with the row named [id] redrawn where it stands, after a write that row made. */

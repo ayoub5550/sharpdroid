@@ -157,8 +157,8 @@ class SettingsActivity : AppCompatActivity() {
         ),
 
         /**
-         * one controller port's bindings, behind its row in [CONTROLS], for the reason
-         * [JIT_ACCURACY] is behind its row: 27 rows about one port are a page somebody opens to map
+         * one controller port's bindings and motors, behind its row in [CONTROLS], for the reason
+         * [JIT_ACCURACY] is behind its row: 29 rows about one port are a page somebody opens to map
          * that port. which port is [SettingsSectionActivity.EXTRA_PORT], and the toolbar names it.
          *
          * never per game, and drawn by no grid: the mapping is the install's, like the switch above

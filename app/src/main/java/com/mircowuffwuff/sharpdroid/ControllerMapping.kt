@@ -77,9 +77,10 @@ class ControllerMapping private constructor(
 
     /**
      * a motor a port names: [index] among one device's vibrators, Dolphin's `Motor 0`, `Motor 1` --
-     * or, with [device] null, the handheld's own.
+     * or, with [device] null, the handheld's own. equal by value, which is how a list of motors finds
+     * the one a port has chosen.
      */
-    class Motor(val device: String?, val index: Int) {
+    data class Motor(val device: String?, val index: Int) {
         override fun toString(): String =
             if (device == null) "the handheld's motor" else "${describe(device)} motor $index"
     }
