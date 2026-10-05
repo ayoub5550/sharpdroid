@@ -115,6 +115,12 @@ def entry():
                              "frame is several times the cost of the calls themselves, so it "
                              "answers which side of the boundary a frame went and never how fast "
                              "something is.")
+    parser.add_argument("--extras", metavar="ARGS", default=None,
+                        help="intent arguments for an extra no flag here names, such as "
+                             "\"--ez padselftest true --ez tracepad true\". they are appended to the "
+                             "guest run's am start as written, after this script's own extras so that "
+                             "an extra named twice takes this value, and the device's shell reads "
+                             "them, so their quoting is the caller's.")
     parser.add_argument("--check", action="store_true",
                         help="run the regression set before deploying.")
     parser.add_argument("--seconds", metavar="N", type=int, default=0,
@@ -149,7 +155,7 @@ def entry():
             ("--log-tids", arguments.log_tids), ("--audio-watchdog", arguments.audio_watchdog),
             ("--smc", arguments.smc), ("--fex-preset", arguments.fex_preset),
             ("--fex", arguments.fex), ("--profile", arguments.profile),
-            ("--host-features", arguments.host_features)) if given]
+            ("--host-features", arguments.host_features), ("--extras", arguments.extras)) if given]
         if guest_only:
             raise Refusal(
                 "no --game, so no guest runs and {} would have no effect. pass --game existing to "
@@ -287,6 +293,8 @@ def launch(attached, package, activity, runs_guest, game, build_path, driver, ar
         say("  knobs   {}".format(arguments.fex))
     if arguments.host_features:
         say("  cpu     {}".format(arguments.host_features))
+    if arguments.extras:
+        say("  extras  {}".format(arguments.extras))
 
     # **every extra is conditional on having been named**, which is what makes omitting an argument
     # reach the app's own default rather than a default this script picked. an extra carrying the
@@ -322,7 +330,8 @@ def launch(attached, package, activity, runs_guest, game, build_path, driver, ar
 
     attached.force_stop(package)
     attached.clear_log()
-    started = attached.start(package, activity, extras, data=arguments.game_uri)
+    started = attached.start(package, activity, extras, data=arguments.game_uri,
+                             verbatim=arguments.extras)
     if "Error" in started or "Exception" in started:
         raise Refusal("the launch failed:\n{}".format(started.strip()))
 

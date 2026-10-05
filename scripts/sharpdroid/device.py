@@ -304,13 +304,18 @@ class Device:
                 return found.endswith("true")
         return False
 
-    def start(self, package, activity, extras=None, wait=False, data=None):
+    def start(self, package, activity, extras=None, wait=False, data=None, verbatim=None):
         """launch an activity, naming it in full.
 
         the extras are typed the way `am` types them: a string is `--es`, a boolean `--ez`, an
         integer `--ei`. **an extra that was not asked for is not passed at all** -- a launch naming
         nothing is the argument vector it always was, and a setting nobody touched contributes
         nothing to it.
+
+        **`verbatim` is intent arguments written out by the caller**, appended after the typed
+        extras as they are, so that an extra named both ways takes this value. it is for an extra no
+        script has a name for, and its quoting is the caller's: it reaches the device's shell
+        untouched.
 
         **`data` is the other way a game can be named**, and it is the one an emulation frontend
         uses: a content uri on the intent itself rather than an extra. it is a separate parameter
@@ -353,6 +358,8 @@ class Device:
                 command += " --ei {} {}".format(name, value)
             else:
                 command += " --es {} {}".format(name, quote(value))
+        if verbatim:
+            command += " " + verbatim
         return self.shell(command, check=False)
 
     # --- the log --------------------------------------------------------------------------------
