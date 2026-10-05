@@ -4,12 +4,16 @@ import android.util.SparseArray
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.FileOutputStream
+import java.io.IOException
 
 /**
  * the controller mapping: which input of which device drives which control of which port, for a run
- * with automatic controller mapping off. [PadState] runs it; this is what it is read from.
+ * with automatic controller mapping off. [PadState] runs it; this is what it is read from, and
+ * [MappingFile] is what the settings screens write it with.
  *
  * **one JSON file for all four ports**, the shape Dolphin's `GCPadNew.ini` and Eden's `player_<n>_`
  * keys both have, read once when the process that runs a guest starts. a port holds a binding per
@@ -187,16 +191,17 @@ class ControllerMapping private constructor(
                             AppLog.w(TAG, "[pad] refused $where's $name: there is no target by that name")
                             null
                         } else {
-                            bindingOf(port * PadTarget.COUNT + target, map.optJSONObject(name),
-                                "$where's $name")
+                            bindingOf(port * PadTarget.COUNT + target, map.optJSONObject(name)) {
+                                AppLog.w(TAG, "[pad] refused $where's $name: $it")
+                            }
                         }
                         if (binding == null) refused++ else bindings.add(binding)
                     }
                 }
-                for ((row, key) in arrayOf("large-motor", "small-motor").withIndex()) {
+                for ((row, key) in MOTOR_KEYS.withIndex()) {
                     val value = entry.opt(key)
                     if (value == null || value == JSONObject.NULL) continue
-                    val motor = motorOf(value, "$where's $key")
+                    val motor = motorOf(value) { AppLog.w(TAG, "[pad] refused $where's $key: $it") }
                     if (motor == null) refused++ else motors[port * 2 + row] = motor
                 }
             }
@@ -205,26 +210,35 @@ class ControllerMapping private constructor(
             return ControllerMapping(bindings, motors)
         }
 
-        /** one binding, or null after saying why it is refused. */
-        private fun bindingOf(slot: Int, json: JSONObject?, where: String): Binding? {
+        /** the two motor keys of a port, large first, in the order [motors] holds them. */
+        val MOTOR_KEYS = arrayOf("large-motor", "small-motor")
+
+        /**
+         * one binding, or null after handing [refuse] the reason.
+         *
+         * **the reason is handed back rather than logged here**, because two readers ask: a launch,
+         * which says once why an entry does nothing, and the settings screens, which read the same
+         * entry on every redraw and would say it every time.
+         */
+        internal fun bindingOf(slot: Int, json: JSONObject?, refuse: (String) -> Unit): Binding? {
             if (json == null) {
-                AppLog.w(TAG, "[pad] refused $where: it is not an object")
+                refuse("it is not an object")
                 return null
             }
             val device = deviceOf(json.optJSONObject("device"))
             if (device == null) {
-                AppLog.w(TAG, "[pad] refused $where: its device is not a name, a number and a known role")
+                refuse("its device is not a name, a number and a known role")
                 return null
             }
             val key = json.optString("key")
             if (key.isNotEmpty()) {
                 val code = KeyEvent.keyCodeFromString(key)
                 if (code == KeyEvent.KEYCODE_UNKNOWN) {
-                    AppLog.w(TAG, "[pad] refused $where: android has no key called $key")
+                    refuse("android has no key called $key")
                     return null
                 }
                 if (code in NEVER_BOUND) {
-                    AppLog.w(TAG, "[pad] refused $where: $key is never bound, it is always android's")
+                    refuse("$key is never bound, it is always android's")
                     return null
                 }
                 return Binding(slot, device, code, 0, NO_AXIS, false)
@@ -232,27 +246,27 @@ class ControllerMapping private constructor(
             val axisName = json.optString("axis")
             val axis = MotionEvent.axisFromString(axisName)
             if (axis < 0) {
-                AppLog.w(TAG, "[pad] refused $where: it names neither a key nor an axis android has")
+                refuse("it names neither a key nor an axis android has")
                 return null
             }
             val source = SOURCES[json.optString("source")]
             if (source == null) {
-                AppLog.w(TAG, "[pad] refused $where: its source is not one of ${SOURCES.keys}")
+                refuse("its source is not one of ${SOURCES.keys}")
                 return null
             }
             val negative = when (json.optString("direction")) {
                 "+" -> false
                 "-" -> true
                 else -> {
-                    AppLog.w(TAG, "[pad] refused $where: its direction is neither + nor -")
+                    refuse("its direction is neither + nor -")
                     return null
                 }
             }
             return Binding(slot, device, NO_KEY, source, axis, negative)
         }
 
-        /** one motor, or null after saying why it is refused. */
-        private fun motorOf(value: Any, where: String): Motor? {
+        /** one motor, or null after handing [refuse] the reason. */
+        internal fun motorOf(value: Any, refuse: (String) -> Unit): Motor? {
             if (value == "handheld") {
                 return Motor(null, 0)
             }
@@ -260,10 +274,37 @@ class ControllerMapping private constructor(
             val device = deviceOf(json?.optJSONObject("device"))
             val index = json?.optInt("motor", -1) ?: -1
             if (device == null || index < 0) {
-                AppLog.w(TAG, "[pad] refused $where: it is neither \"handheld\" nor a device and a motor")
+                refuse("it is neither \"handheld\" nor a device and a motor")
                 return null
             }
             return Motor(device, index)
+        }
+
+        /** a binding as the file writes it -- the inverse of [bindingOf]. */
+        internal fun bindingJson(binding: Binding): JSONObject {
+            val json = JSONObject().put("device", deviceJson(binding.device))
+            if (binding.keyCode != NO_KEY) {
+                return json.put("key", KeyEvent.keyCodeToString(binding.keyCode))
+            }
+            val source = SOURCES.entries.firstOrNull { it.value == binding.source }?.key
+                ?: "JOYSTICK"
+            return json.put("source", source)
+                .put("axis", MotionEvent.axisToString(binding.axis))
+                .put("direction", if (binding.negative) "-" else "+")
+        }
+
+        /** a motor as the file writes it -- the inverse of [motorOf]. */
+        internal fun motorJson(motor: Motor): Any {
+            val device = motor.device ?: return "handheld"
+            return JSONObject().put("device", deviceJson(device)).put("motor", motor.index)
+        }
+
+        /** an [identity] as the file's device object, leaving out a role it does not have. */
+        private fun deviceJson(identity: String): JSONObject {
+            val parts = identity.split('\u0000')
+            val json = JSONObject().put("name", parts[0])
+            if (parts[1].isNotEmpty()) json.put("role", parts[1])
+            return json.put("number", parts[2].toInt())
         }
 
         /** a file's device object as an [identity], or null when it is not one. */
@@ -334,6 +375,170 @@ class ControllerMapping private constructor(
 
         /** a source carries a class bit as well as its own, so it is tested whole -- see [PadState.isGamepad]. */
         private fun has(sources: Int, source: Int): Boolean = (sources and source) == source
+    }
+}
+
+/**
+ * the controller mapping as the settings screens edit it: the file's own JSON, changed in place and
+ * written back whole.
+ *
+ * **the parsed tree is edited rather than a model of it rebuilt**, so whatever this app does not
+ * understand survives an edit that did not touch it: a binding [ControllerMapping.read] refuses, a key
+ * a later version adds to a port. a writer that rebuilt the file from what it could read would discard
+ * all of it the first time anybody bound a button.
+ *
+ * **a file this app cannot read is never written.** one that is not JSON, or names a newer version or
+ * none, sets [unwritable] and makes every write a refusal, and the screens grey the ports out and say
+ * why -- [ControllerMapping.read] leaves the same file alone for the same reason.
+ *
+ * **written whole to a file beside it and renamed over it**, so a launch reading while a screen writes
+ * finds one mapping or the other and never half of one.
+ *
+ * not thread-safe: the screens use it on the main thread, and the file is a few kilobytes.
+ */
+class MappingFile(private val file: File) {
+
+    /** why this file is not written, or null while it is. */
+    enum class Unwritable { NEWER, UNREADABLE }
+
+    var unwritable: Unwritable? = null
+        private set
+
+    private var root = JSONObject()
+
+    init {
+        reload()
+    }
+
+    /** reads the file again, for a screen coming back to one another screen may have written. */
+    fun reload() {
+        unwritable = null
+        // what the first write makes of a file that is not there yet.
+        root = JSONObject().put("version", ControllerMapping.VERSION)
+        if (!file.isFile) return
+        val parsed = try {
+            JSONObject(file.readText())
+        } catch (e: Exception) {
+            null
+        }
+        val version = parsed?.optInt("version", 0) ?: 0
+        unwritable = when {
+            parsed == null -> Unwritable.UNREADABLE
+            version > ControllerMapping.VERSION -> Unwritable.NEWER
+            version < 1 || parsed.optJSONArray("ports") == null -> Unwritable.UNREADABLE
+            else -> {
+                root = parsed
+                null
+            }
+        }
+    }
+
+    /** what drives [target] on [port], or null for nothing -- or for an entry that cannot be read. */
+    fun binding(port: Int, target: Int): ControllerMapping.Binding? {
+        val json = bindings(port, create = false)?.optJSONObject(PadTarget.NAMES[target]) ?: return null
+        return ControllerMapping.bindingOf(port * PadTarget.COUNT + target, json) {}
+    }
+
+    /** [binding] in place of whatever its slot held. false when nothing was written. */
+    fun bind(binding: ControllerMapping.Binding): Boolean {
+        if (unwritable != null) return false
+        val port = binding.slot / PadTarget.COUNT
+        val target = binding.slot % PadTarget.COUNT
+        bindings(port, create = true)!!.put(PadTarget.NAMES[target], ControllerMapping.bindingJson(binding))
+        return save()
+    }
+
+    fun unbind(port: Int, target: Int): Boolean {
+        if (unwritable != null) return false
+        bindings(port, create = false)?.remove(PadTarget.NAMES[target]) ?: return true
+        return save()
+    }
+
+    /** the motor [row] names on [port] -- 0 the large one, 1 the small -- or null for none. */
+    fun motor(port: Int, row: Int): ControllerMapping.Motor? {
+        val value = portOf(port, create = false)?.opt(ControllerMapping.MOTOR_KEYS[row]) ?: return null
+        if (value == JSONObject.NULL) return null
+        return ControllerMapping.motorOf(value) {}
+    }
+
+    fun setMotor(port: Int, row: Int, motor: ControllerMapping.Motor?): Boolean {
+        if (unwritable != null) return false
+        val key = ControllerMapping.MOTOR_KEYS[row]
+        if (motor == null) {
+            portOf(port, create = false)?.remove(key) ?: return true
+        } else {
+            portOf(port, create = true)!!.put(key, ControllerMapping.motorJson(motor))
+        }
+        return save()
+    }
+
+    /**
+     * every binding and both motors off [port], which is what its row's long press puts back. a key
+     * this app does not know stays, for the reason the class comment gives.
+     */
+    fun clear(port: Int): Boolean {
+        if (unwritable != null) return false
+        val entry = portOf(port, create = false) ?: return true
+        entry.remove("bindings")
+        for (key in ControllerMapping.MOTOR_KEYS) entry.remove(key)
+        return save()
+    }
+
+    /** whether [port] holds a binding or a motor that can be read. */
+    fun inUse(port: Int): Boolean =
+        (0 until PadTarget.COUNT).any { binding(port, it) != null } ||
+            (0..1).any { motor(port, it) != null }
+
+    /**
+     * the devices [port] names, in the order its rows draw them: every bound device by target, then
+     * a motor's device that binds nothing there. the handheld's motor names no device.
+     */
+    fun devices(port: Int): List<String> {
+        val found = LinkedHashSet<String>()
+        for (target in 0 until PadTarget.COUNT) binding(port, target)?.let { found.add(it.device) }
+        for (row in 0..1) motor(port, row)?.device?.let { found.add(it) }
+        return found.toList()
+    }
+
+    private fun portOf(port: Int, create: Boolean): JSONObject? {
+        val ports = root.optJSONArray("ports")
+            ?: if (create) JSONArray().also { root.put("ports", it) } else return null
+        ports.optJSONObject(port)?.let { return it }
+        if (!create) return null
+        // **every port before this one is filled in as an empty object** rather than left as the
+        // nulls JSONArray pads with, which the reader would refuse port by port.
+        for (i in 0..port) {
+            if (ports.optJSONObject(i) == null) ports.put(i, JSONObject())
+        }
+        return ports.getJSONObject(port)
+    }
+
+    private fun bindings(port: Int, create: Boolean): JSONObject? {
+        val entry = portOf(port, create) ?: return null
+        entry.optJSONObject("bindings")?.let { return it }
+        if (!create) return null
+        return JSONObject().also { entry.put("bindings", it) }
+    }
+
+    /**
+     * the whole tree to the file. a write that fails reads the file back, so the screen goes on
+     * showing what is on disk rather than what was meant to be.
+     */
+    private fun save(): Boolean {
+        val partial = File(file.path + ".tmp")
+        return try {
+            FileOutputStream(partial).use { out ->
+                out.write(root.toString(2).toByteArray())
+                out.fd.sync()
+            }
+            if (!partial.renameTo(file)) throw IOException("could not rename ${partial.path}")
+            true
+        } catch (e: Exception) {
+            AppLog.w("sharpdroid", "[pad] could not write the controller mapping to ${file.path}", e)
+            partial.delete()
+            reload()
+            false
+        }
     }
 }
 
