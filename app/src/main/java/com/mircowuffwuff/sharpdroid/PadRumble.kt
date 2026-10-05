@@ -29,8 +29,8 @@ import androidx.annotation.RequiresApi
  *
  * **under automatic mapping a game's rumble drives every motor there is**: this device's own and those
  * of every connected controller that has any, which matches input being taken from every controller at
- * once. with automatic mapping off, it drives the motors the ports name, and there are no port rows to
- * name one -- so nothing vibrates.
+ * once. with automatic mapping off, each port drives the two motors the controller mapping names for
+ * it -- see [useMapping] -- and a port naming none vibrates nothing.
  */
 object PadRumble {
 
@@ -106,6 +106,10 @@ object PadRumble {
     @Volatile
     private var handheld: Motor? = null
 
+    /** this device's own vibrator, which a port can name as well as automatic mapping driving it. */
+    @Volatile
+    private var handheldVibrator: Vibrator? = null
+
     /**
      * the connected controllers that have a motor, by device id.
      *
@@ -139,6 +143,98 @@ object PadRumble {
     var automatic: Boolean = true
 
     /**
+     * one device's motors as the ports drive them: a level for each, sent together.
+     *
+     * **one call carries every motor of a device**, because a new vibration on an input device
+     * replaces the one before it, so a call per motor would leave only the last one running. [levels]
+     * is what the ports ask for now and [sent] what was last sent, and both are the rumble thread's
+     * alone, like [Motor]'s pacing.
+     */
+    private abstract class Outputs(motors: Int) {
+        val levels = IntArray(motors)
+        val sent = IntArray(motors)
+        var sentAt = 0L
+
+        /** every motor at its level in [levels], those under [FLOOR] stopped. */
+        abstract fun send(levels: IntArray)
+        abstract fun stop()
+    }
+
+    /** this device's own motor, as a port names it. */
+    private class HandheldOutputs(private val vibrator: Vibrator) : Outputs(1) {
+        private val amplitude = vibrator.hasAmplitudeControl()
+        override fun send(levels: IntArray) = vibrator.vibrate(pulse(levels[0], amplitude))
+        override fun stop() = vibrator.cancel()
+    }
+
+    /**
+     * a controller's motors, each named by its vibrator id in one combined vibration.
+     *
+     * **that is the call that addresses one motor**, and it is chosen over the other on purpose: the
+     * vibrator a controller's manager hands out for one id is believed to drive every channel of the
+     * device at once on the platform's input path. Dolphin drives a motor through that per-id vibrator
+     * and Eden drives all of a controller's motors together, so neither settles it; a large motor that
+     * can be told from the small one is what does.
+     */
+    @RequiresApi(Build.VERSION_CODES.S)
+    private class ControllerOutputs(
+        private val manager: VibratorManager,
+        private val ids: IntArray,
+    ) : Outputs(ids.size) {
+        private val amplitude =
+            BooleanArray(ids.size) { manager.getVibrator(ids[it]).hasAmplitudeControl() }
+
+        override fun send(levels: IntArray) {
+            val combined = CombinedVibration.startParallel()
+            for (i in ids.indices) {
+                if (levels[i] >= FLOOR) combined.addVibrator(ids[i], pulse(levels[i], amplitude[i]))
+            }
+            manager.vibrate(combined.combine())
+        }
+
+        override fun stop() = manager.cancel()
+    }
+
+    /** a controller's one vibrator below android 12, which is all a controller exposes there. */
+    private class LegacyOutputs(private val vibrator: Vibrator) : Outputs(1) {
+        private val amplitude = vibrator.hasAmplitudeControl()
+        override fun send(levels: IntArray) = vibrator.vibrate(pulse(levels[0], amplitude))
+        override fun stop() = vibrator.cancel()
+    }
+
+    /**
+     * where each port's motors are among the devices connected now: for each slot -- a port's large
+     * motor at `port * 2`, its small one after it -- the outputs holding that motor and which of their
+     * motors it is. replaced whole on a device change, like [controllers], and a device still
+     * connected keeps its outputs and with them its pacing.
+     */
+    private class Routing(
+        val outputs: Array<Outputs?>,
+        val motors: IntArray,
+        val byDevice: Map<Int, Outputs>,
+        val handheld: Outputs?,
+    )
+
+    /** the motors the controller mapping names, slot by slot, or null under automatic mapping. */
+    @Volatile
+    private var mapped: Array<ControllerMapping.Motor?>? = null
+
+    @Volatile
+    private var routing: Routing? = null
+
+    /** each slot's latest request, 0..255. touched only on the rumble thread. */
+    private val requested = IntArray(ControllerMapping.PORTS * 2)
+
+    /**
+     * drives each port's own two motors from now on, rather than every motor there is. called once,
+     * before [attach], by the process that runs a guest with automatic mapping off.
+     */
+    @JvmStatic
+    fun useMapping(motors: Array<ControllerMapping.Motor?>) {
+        mapped = motors.copyOf()
+    }
+
+    /**
      * called by the activity that owns a run, before the guest starts.
      *
      * the application context is held rather than the activity, because this outlives any one screen
@@ -158,9 +254,11 @@ object PadRumble {
             // run this on, and the alternative is a line per rumble for the rest of the run.
             AppLog.i(TAG, "[pad] this device has no vibrator of its own")
             handheld = null
+            handheldVibrator = null
         } else {
             val motor = Handheld(device)
             handheld = motor
+            handheldVibrator = device
             // **"an actuator exists" and "we may drive it" are different questions, and only the
             // first is answered here.** neither hasVibrator nor hasAmplitudeControl consults the
             // VIBRATE permission, so both answer truthfully to an app that has not been granted it and
@@ -201,6 +299,53 @@ object PadRumble {
                     if (motor.amplitudeControl) "available" else "absent")
         }
         controllers = found
+        mapped?.let { routing = route(it, routing) }
+    }
+
+    /**
+     * each slot's motor found among the devices connected now, through the identities [PadState]
+     * numbered for this run -- so this is called after it has numbered them, which is the order the
+     * activity's listener calls the two in.
+     *
+     * a slot naming a device that is not here, or a motor that device does not have -- the Odin's
+     * copy of a controller has none -- drives nothing until a change brings it.
+     */
+    private fun route(mapped: Array<ControllerMapping.Motor?>, previous: Routing?): Routing {
+        val outputs = arrayOfNulls<Outputs>(mapped.size)
+        val motors = IntArray(mapped.size)
+        val byDevice = HashMap<Int, Outputs>()
+        var own: Outputs? = null
+        for (slot in mapped.indices) {
+            val motor = mapped[slot] ?: continue
+            val identity = motor.device
+            val output = if (identity == null) {
+                own = own ?: previous?.handheld ?: handheldVibrator?.let { HandheldOutputs(it) }
+                own
+            } else {
+                val id = PadState.deviceIdOf(identity)
+                if (id == DeviceNumbers.NO_DEVICE) {
+                    null
+                } else {
+                    byDevice[id]
+                        ?: (previous?.byDevice?.get(id) ?: outputsOf(id))?.also { byDevice[id] = it }
+                }
+            }
+            if (output == null || motor.index >= output.levels.size) continue
+            outputs[slot] = output
+            motors[slot] = motor.index
+        }
+        return Routing(outputs, motors, byDevice, own)
+    }
+
+    private fun outputsOf(deviceId: Int): Outputs? {
+        val device = InputDevice.getDevice(deviceId) ?: return null
+        val ids = PadMotors.vibratorIds(device)
+        if (ids.isEmpty()) return null
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            return ControllerOutputs(device.vibratorManager, ids)
+        }
+        @Suppress("DEPRECATION")
+        return LegacyOutputs(device.vibrator)
     }
 
     private fun motorsOf(device: InputDevice): Motor? {
@@ -232,6 +377,11 @@ object PadRumble {
             motor.stop()
         }
         controllers = emptyMap()
+        routing?.let { route ->
+            route.handheld?.stop()
+            for (output in route.byDevice.values) output.stop()
+        }
+        routing = null
     }
 
     /**
@@ -245,17 +395,20 @@ object PadRumble {
      * at the level asked for counts as taken: the platform has it.
      *
      * @param port the port the guest asked about, 0 to 3. under automatic mapping every port drives
-     *   every motor, since every controller is merged into port 1.
+     *   every motor, since every controller is merged into port 1; under a controller mapping it
+     *   drives that port's own two.
      * @param large the strong motor, 0..255.
      * @param small the weak motor, 0..255.
      * @return true when at least one motor has the request; false when there is nothing to vibrate,
      *   nothing was asked for, vibration is off, or every motor refused.
      */
     @JvmStatic
-    @Suppress("UNUSED_PARAMETER")
     fun rumble(port: Int, large: Int, small: Int): Boolean {
-        if (!enabled || !automatic) {
+        if (!enabled) {
             return false
+        }
+        if (!automatic) {
+            return rumbleMapped(port, large, small)
         }
         // a motor is driven by the louder of the two levels a game asks for. taking the larger
         // rather than a sum or an average is what keeps a request for one strong motor from arriving
@@ -268,6 +421,66 @@ object PadRumble {
         }
         return took
     }
+
+    /**
+     * a request under a controller mapping: the port's large motor at [large] and its small one at
+     * [small], each motor at the strongest request any slot naming it makes -- so a motor named by
+     * both rows, or by two ports, takes the stronger. only the outputs this port names are touched.
+     */
+    private fun rumbleMapped(port: Int, large: Int, small: Int): Boolean {
+        if (port !in 0 until ControllerMapping.PORTS) return false
+        val routing = routing ?: return false
+        requested[port * 2] = large.coerceIn(0, 255)
+        requested[port * 2 + 1] = small.coerceIn(0, 255)
+        val first = routing.outputs[port * 2]
+        val second = routing.outputs[port * 2 + 1]
+        var took = false
+        if (first != null) took = drive(first, routing)
+        if (second != null && second !== first) took = drive(second, routing) or took
+        return took
+    }
+
+    /** [output] at the levels its slots ask for, paced as [drive] paces one motor. */
+    private fun drive(output: Outputs, routing: Routing): Boolean {
+        val levels = output.levels
+        levels.fill(0)
+        for (slot in routing.outputs.indices) {
+            if (routing.outputs[slot] !== output) continue
+            val motor = routing.motors[slot]
+            if (requested[slot] > levels[motor]) levels[motor] = requested[slot]
+        }
+        try {
+            if (levels.all { it < FLOOR }) {
+                // a stop is sent once, as for a single motor.
+                if (output.sent.any { it != 0 }) {
+                    output.stop()
+                    output.sent.fill(0)
+                }
+                return false
+            }
+            val now = SystemClock.uptimeMillis()
+            if (levels.contentEquals(output.sent) && now - output.sentAt < REFRESH_MILLIS) {
+                return true
+            }
+            output.send(levels)
+            levels.copyInto(output.sent)
+            output.sentAt = now
+            return true
+        } catch (e: Exception) {
+            AppLog.w(TAG, "[pad] a rumble request failed", e)
+            return false
+        }
+    }
+
+    /**
+     * one pulse at [strength]. with no amplitude control the only choice is whether it buzzes at all,
+     * and the platform's own idea of a reasonable strength is a better answer than picking one here.
+     */
+    private fun pulse(strength: Int, amplitudeControl: Boolean): VibrationEffect =
+        VibrationEffect.createOneShot(
+            PULSE_MILLIS,
+            if (amplitudeControl) strength else VibrationEffect.DEFAULT_AMPLITUDE,
+        )
 
     private fun drive(motor: Motor, strength: Int): Boolean {
         try {

@@ -581,10 +581,14 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         boolean automaticMapping =
                 !Boolean.FALSE.equals(Settings.of(this).getAutomaticControllerMapping());
         PadState.setEnabled(automaticMapping);
-        // with it off the ports are the controller mapping's, read here once for the same reason.
-        // the first sweep of the connected devices below is what resolves it.
+        // with it off the ports are the controller mapping's, read here once for the same reason:
+        // its bindings drive the ports and its motors take each port's rumble. the first sweep of the
+        // connected devices below is what resolves it.
         if (!automaticMapping) {
-            PadState.useMapping(ControllerMapping.read(AppStorage.controllerMapping(getFilesDir())));
+            ControllerMapping mapping =
+                    ControllerMapping.read(AppStorage.controllerMapping(getFilesDir()));
+            PadState.useMapping(mapping);
+            PadRumble.useMapping(mapping.getMotors());
         }
         PadState.setTracing(tracePad);
         PadRumble.setAutomatic(automaticMapping);

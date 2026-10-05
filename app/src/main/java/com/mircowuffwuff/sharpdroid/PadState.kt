@@ -1,6 +1,5 @@
 package com.mircowuffwuff.sharpdroid
 
-import android.os.Build
 import android.util.SparseArray
 import android.view.InputDevice
 import android.view.KeyEvent
@@ -483,6 +482,14 @@ object PadState {
     var tracing = false
 
     /**
+     * the android device id carrying [identity] under this run's numbering, or
+     * [DeviceNumbers.NO_DEVICE]. what [PadRumble] finds a port's motors through, so that a motor and
+     * a binding naming the same controller always find the same device.
+     */
+    @JvmStatic
+    fun deviceIdOf(identity: String): Int = numbers.deviceIdOf(identity)
+
+    /**
      * a key, under a controller mapping. consumed only when it is bound: an unbound press goes on to
      * android, as Dolphin leaves it, and that is what keeps `BACK` and the volume keys android's.
      */
@@ -717,8 +724,8 @@ object PadState {
     }
 
     /**
-     * a port's motor and whether it is there. nothing drives a port's motors yet; this says what the
-     * file names so that a mapping can be checked before anything does.
+     * a port's motor and whether it is there, which is what [PadRumble] can drive: a motor of a device
+     * that is not connected, or past the motors it has, drives nothing.
      */
     private fun describe(motor: ControllerMapping.Motor?): String {
         if (motor == null) return "none"
@@ -730,10 +737,6 @@ object PadState {
 
     private fun motorCount(deviceId: Int): Int {
         val device = InputDevice.getDevice(deviceId) ?: return 0
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            return device.vibratorManager.vibratorIds.size
-        }
-        @Suppress("DEPRECATION")
-        return if (device.vibrator.hasVibrator()) 1 else 0
+        return PadMotors.vibratorIds(device).size
     }
 }

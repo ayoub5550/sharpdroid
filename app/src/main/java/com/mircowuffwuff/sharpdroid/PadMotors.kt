@@ -16,7 +16,8 @@ import android.view.InputDevice
  * and its small motor itself and why picking one buzzes it -- that buzz is this app's, Dolphin having
  * none.
  *
- * the port screen lists and buzzes them, in the app's own process.
+ * shared by the port screen, which lists and buzzes them in the app's own process, and [PadRumble],
+ * which drives them in the process that runs a guest.
  */
 object PadMotors {
 
@@ -71,7 +72,7 @@ object PadMotors {
      * a short full-strength buzz on [motor] alone. false when it is not here or the platform refused.
      *
      * **one vibrator of a controller is named by id in a combined vibration**, which is the call that
-     * addresses a single motor.
+     * addresses a single motor -- see [PadRumble] on why the other is not trusted to.
      */
     fun buzz(context: Context, motor: ControllerMapping.Motor, numbers: DeviceNumbers): Boolean {
         try {
