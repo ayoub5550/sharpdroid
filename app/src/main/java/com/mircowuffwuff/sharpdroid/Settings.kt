@@ -569,8 +569,9 @@ class Settings private constructor(
      * **only what was actually chosen.** an untouched row puts nothing in the map, so the guest's
      * environment is byte-for-byte one this file had no hand in.
      *
-     * the launcher's own four -- the host window, its size, the host audio selector and the .NET one
-     * -- are written by [MainActivity] *after* this map and are deliberately not expressible here.
+     * the launcher's own -- the host window, its size, the host audio and input selectors, the .NET
+     * one and the user directories among them -- are written by [MainActivity] *after* this map and
+     * are deliberately not expressible here.
      * they are the contract a payload is run under rather than a preference, which is the same rule
      * `docs/build-format.md` states for a build's `env`.
      *
