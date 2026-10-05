@@ -123,8 +123,14 @@ class UserDataActivity : AppCompatActivity() {
             // figure over one Reset button, and that button clears both stores -- so a number counting
             // only the first would report "nothing changed" over a button that is about to change
             // something. the two are added rather than shown apart because the card has one line.
+            //
+            // **and each controller port mapping anything counts once**, for the same reason: Reset
+            // deletes the mapping file, so a card leaving it out would say "No changes" over a button
+            // about to delete somebody's mapping. a port rather than a binding, because a fully
+            // mapped port is 29 entries and would swamp every other change on the card.
             val changed = Settings.of(this).changedFromDefault() +
-                Settings.gameStoreKeys(this).sumOf { Settings.forGame(this, it).overridden() }
+                Settings.gameStoreKeys(this).sumOf { Settings.forGame(this, it).overridden() } +
+                ControllerMapping.portsInUse(AppStorage.controllerMapping(files))
             val items = UserDataItem.measure(files, changed)
             runOnUiThread { if (!isFinishing) adapter.submit(items) }
         }

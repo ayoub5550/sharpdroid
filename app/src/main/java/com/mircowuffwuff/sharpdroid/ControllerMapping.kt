@@ -382,6 +382,33 @@ class ControllerMapping private constructor(
         }
 
         /**
+         * how many ports [file] maps anything onto, for the User data screen's Settings card: a port
+         * holding a binding or a motor counts once, whatever else it holds.
+         *
+         * **a file this app cannot read counts as one**, because Reset all settings deletes it all the
+         * same, and a card reading "No changes" over a button that is about to delete something is the
+         * one answer that card must never give.
+         */
+        @JvmStatic
+        fun portsInUse(file: File): Int {
+            if (!file.isFile) return 0
+            val ports = try {
+                JSONObject(file.readText()).takeIf { it.optInt("version", 0) in 1..VERSION }
+                    ?.optJSONArray("ports")
+            } catch (e: Exception) {
+                null
+            } ?: return 1
+            var used = 0
+            for (port in 0 until minOf(ports.length(), PORTS)) {
+                val entry = ports.optJSONObject(port) ?: continue
+                val bound = (entry.optJSONObject("bindings")?.length() ?: 0) > 0
+                val motor = MOTOR_KEYS.any { entry.has(it) && !entry.isNull(it) }
+                if (bound || motor) used++
+            }
+            return used
+        }
+
+        /**
          * a device's identity, short of its number: its name, and a role when it is not a gamepad.
          *
          * **the name, as Dolphin identifies a device**, rather than vendor and product as Eden does
