@@ -49,7 +49,7 @@ what the trap buys for that is three things the page cannot:
 | `1` rumble | `(large, small)` | 0, as soon as the request is recorded. port 1's rumble, for the payloads that read a single pad |
 | `2` rumble on a port | `(port, large, small)` | 0, as soon as the request is recorded; negative for a port that does not exist |
 
-**there are four ports, numbered 0 to 3 across the boundary**: port index 0 is what the app calls Controller port 1. **the read is a poll and writes into the guest's own buffer in place**, there being no pointer translation anywhere. a rumble returns before anything has buzzed; see below.
+**there are four ports, numbered 0 to 3 across the boundary**: port index 0 is what the app calls Port 1. **the read is a poll and writes into the guest's own buffer in place**, there being no pointer translation anywhere. a rumble returns before anything has buzzed; see below.
 
 **the two rumbles are one request with and without a port.** `1` is answered by passing port index 0 to exactly what `2` does, so neither has behaviour of its own.
 
@@ -234,4 +234,4 @@ the app exposes all three as launch extras — `--ez tracepad`, `--ez padselftes
 
 the launcher sets `SHARPEMU_HOST_INPUT=android` and the payload is expected to register a host input source that polls this bridge: in the contract 3 format at **contract generation 3**, and in the contract 4 format at **generation 4**. [`build-format.md`](build-format.md) owns the numbers.
 
-the range admits generation 2 as well, so a generation-2 build still launches. it registers no input source, and its pad exports then report a controller that is permanently connected and permanently neutral — a game that ignores every button. that is admitted where a missing audio backend is refused, and the difference is what a person can tell: silent audio is indistinguishable from a scene with no music, while a controller that does nothing is obvious within seconds, and the launch log names the generation that ran.
+the range admits generations 1 and 2 as well, so a build of either still launches. neither registers an input source, and its pad exports then report a controller that is permanently connected and permanently neutral — a game that ignores every button. that is admitted where a missing audio backend is refused, and the difference is what a person can tell: silent audio is indistinguishable from a scene with no music, while a controller that does nothing is obvious within seconds, and the launch log names the generation that ran.
