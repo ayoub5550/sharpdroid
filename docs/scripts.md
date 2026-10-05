@@ -111,6 +111,8 @@ keytool -genkeypair -keystore app/release.keystore -alias sharpdroid \
 
 **`--fex-preset none` passes no `--fex` at all**, where naming a rung passes every knob it sets. every rung states all nine values it covers, so an ordinary launch spells the whole JIT configuration out and leaves nothing to whatever FEXCore defaults to — which is right for a run somebody is playing and wrong for one being compared against a figure recorded before that was true. `none` is that comparison, and it is not a rung: it drops the stored preset and every knob overriding it, and it is a launch argument rather than anything the settings scene can hold.
 
+**`--extras` hands the guest activity an extra no flag here names**, written out as `am start` takes it: `--extras "--ez padselftest true --ez tracepad true"` runs the pad's rumble self-test with every poll traced. it is appended after this script's own extras, so an extra named both ways takes this value, and it reaches the device's shell untouched, so its quoting is the caller's. it is refused without a game, like every other flag only the guest activity reads: the game list would ignore it, and a flag that silently does nothing is the run that was not asked for. [`pad.md`](pad.md) and the activity's own comments name the extras it reads.
+
 `--restage` pushes over what the device has regardless of what the byte counts say. it is rarely needed, since a size mismatch restages by itself; it is the escape hatch for the one case a byte count cannot see, which is two different dumps or builds of exactly the same length.
 
 ## building the pieces
