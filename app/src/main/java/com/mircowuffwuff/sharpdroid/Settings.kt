@@ -194,6 +194,9 @@ class Settings private constructor(
         if (hostFeatureProbe == false) count++
         if (renderScale?.let { it != RENDER_SCALES[0] } == true) count++
         if (diskShaderCache == true) count++
+        // both on by default, so compared against on for the reason the loading estimate is.
+        if (automaticControllerMapping == false) count++
+        if (controllerVibration == false) count++
         // **absence is the default and the bundled build is a choice, even though a launch resolves
         // the two to the same payload.** what separates them is that nothing writes this key by
         // itself: a fresh install stores nothing, and BuildsActivity.select returns early on the row
