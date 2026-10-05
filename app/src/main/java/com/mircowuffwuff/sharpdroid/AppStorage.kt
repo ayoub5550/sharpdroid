@@ -95,6 +95,18 @@ object AppStorage {
     fun user(filesDir: File): File = File(filesDir, "user")
 
     /**
+     * the controller mapping, which [ControllerMapping] reads -- what drives each port when automatic
+     * controller mapping is off.
+     *
+     * **beside [user] rather than in it**, because it is the app's setting rather than anything the
+     * emulator writes. it is a file rather than a preference because it is one structure of four ports
+     * and their bindings. Everything's export and import carry it with the rest of `files/`, Delete
+     * everything removes it with the rest, and Reset all settings deletes it by name.
+     */
+    @JvmStatic
+    fun controllerMapping(filesDir: File): File = File(filesDir, "controller-mapping.json")
+
+    /**
      * Save data -- `SHARPEMU_SAVEDATA_DIR`. the `<title id>/` level underneath is the guest's, and it
      * writes the same layout here that it writes beside a desktop executable.
      *

@@ -16,7 +16,7 @@ so it is inverted into a pull:
 
 ```
 a KeyEvent or MotionEvent arrives at the activity
-  -> PadState edits the one live snapshot and pushes the whole of it down through JNI
+  -> PadState edits the live state of the port it drives and pushes that port down through JNI
     -> the host layer holds the latest, and only the latest
       -> the guest polls for it through a syscall with a magic number
 ```
@@ -72,7 +72,7 @@ what the trap buys for that is three things the page cannot:
 
 the button numbering is the **emulator's own seam values**, not the guest's. the translation to `SCE_PAD_BUTTON` bits happens on the payload's side, so no PlayStation ABI value appears anywhere in this repository.
 
-## the mapping
+## automatic mapping
 
 **positional, not by letter.** android names the face buttons after the layout most controllers are printed with, and each maps to where it physically is: A is the bottom button and becomes Cross, B the right and Circle, X the left and Square, Y the top and Triangle. that is what makes a controller with PlayStation glyphs behave the way its glyphs say.
 
@@ -82,14 +82,79 @@ a d-pad arrives either as four keys or as a hat axis, and both are handled — t
 
 **the host layer carries four ports, and one of them reaches a game.** the emulator's pad exports read at most two states, take the type, motion and touch of the first and merge the rest into one pad, so its input source reads port 1 alone — handing it a second port would have two players steering one character. a payload that addresses players separately reads the contract 4 format on each port.
 
+## the controller mapping
+
+with Automatic controller mapping off, the four ports are driven by **the controller mapping**: any input of any device bound to any control of a port, two devices free to share a port on different controls. it is one JSON file, `files/controller-mapping.json` in the app's internal storage, read once by the process that runs a guest. the app has no screen that writes it; it is written by hand and copied in with `run-as`.
+
+```json
+{
+  "version": 1,
+  "ports": [
+    {
+      "bindings": {
+        "cross":         { "device": "2020:0112 #1", "name": "Xbox Wireless Controller", "key": "KEYCODE_BUTTON_A" },
+        "left-stick-up": { "device": "2020:0112 #1", "name": "Xbox Wireless Controller",
+                           "source": "JOYSTICK", "axis": "AXIS_Y", "direction": "-" },
+        "l2":            { "device": "2020:0112 #1", "name": "Xbox Wireless Controller",
+                           "source": "JOYSTICK", "axis": "AXIS_LTRIGGER", "direction": "+" }
+      },
+      "large-motor": { "device": "045e:0b13 #1", "name": "Xbox Wireless Controller", "motor": 0 },
+      "small-motor": "handheld"
+    },
+    { "bindings": {} }, { "bindings": {} }, { "bindings": {} }
+  ]
+}
+```
+
+**a port has 27 controls a binding can drive, and one binding each**: the buttons `up` `down` `left` `right` `cross` `circle` `square` `triangle` `l1` `r1` `l3` `r3` `options` `touchpad` `create` `ps` `mic`, the four directions of each stick as `left-stick-up` through `right-stick-right`, and the triggers `l2` and `r2`. **a trigger is one control and gives both the L2 or R2 press and its depth**, as a DualSense does; Dolphin binds a GameCube trigger's press and depth separately, which a trigger with a click at the end of its travel needs and a DualSense's does not.
+
+**an input is spelled as android spells it**: a key by its `KeyEvent` name, an axis by its `MotionEvent` name with the source `dumpsys input` prints for it and a direction, `+` or `-`. an axis carries its source because a device may have the same axis on two sources, and each half of an axis is an input of its own, as Dolphin's `Axis 1-` is. `KEYCODE_BACK` and the volume keys are refused: back always opens the panel and the volume keys are the device's. the DualSense's touchpad click is a pointer button rather than a key, and the file has no way to name one.
+
+**a device is its vendor and product, a role and a number**, and the `name` stored beside it is for display only, so that a binding to a device that is not connected can still say what it was.
+
+- **vendor and product, as Eden identifies a device**, rather than android's descriptor or the name. the descriptor is one physical unit in one mode, so a binding would not survive another phone or a controller switched to another mode, and a name is shared by different models — two DualSense generations with different layouts carry the same one. a device reporting neither a vendor nor a product, which built-in keys and jacks commonly do, has nothing to number among but its name, so the name stands in, quoted.
+- **a role for a device that is not a gamepad** — `touchpad`, `mouse`, `keyboard` or `other` — because one controller can be several android devices sharing a vendor and product: the DualSense's touchpad is a device of its own.
+- **a number among identical devices**: the lowest no connected one holds, kept for as long as the device stays connected, so when #1 of two identical controllers drops out #2 goes on driving what #2 is bound to. that is Dolphin's rule in `ControllerInterface::AddDevice`. Eden's position among every controller would move a binding whenever a different controller connects first. the devices present at launch are numbered in the order they connected.
+
+**how an input drives a control:**
+
+| | a key | an axis, in its bound direction |
+| --- | --- | --- |
+| a button | pressed while held | pressed past half way, Dolphin's threshold for a button |
+| a stick direction | full deflection while held | as far as the axis goes |
+| a trigger | full depth while held | as deep as the axis goes |
+
+a stick axis is its positive direction less its negative one, onto 0..255 by automatic mapping's `128 + v×127`, and a trigger presses L2 or R2 past 32 of 255 as automatic mapping's does.
+
+**an event is looked up, never scanned.** each device's identity is resolved, and its bindings gathered into a table keyed by android's device id and its key codes, when the device arrives or leaves; an event is one lookup into that table, a motion event then reads only the axes bound on that device, and nothing on the way allocates. a port crosses into the host layer only when one of its bytes changed. continuous stick movement costs the activity's thread what it costs under automatic mapping — 550 and 560 ms against 570 and 570 ms over fifteen seconds on the Odin 3, at the kernel's 10 ms resolution — and most of that is the platform's own input delivery.
+
+**a bound event is consumed and nothing else is.** an unbound press goes on to android, as Dolphin leaves it, so `BACK` and the volume keys always reach it, and an unbound B, which android turns into back, opens the panel.
+
+**a port is connected while any device in its bindings is**, and a device leaving puts only the controls bound to it back at rest: a button held on another device on the same port stays held.
+
+**a file this app cannot read is never rewritten or removed.** a newer version than the app reads, or a file that is not JSON, gives a run with no bindings and a line saying why; an entry that cannot be read is refused on its own and the rest of the file still applies.
+
+**every launch says what the mapping resolved to**, which is what tells "no file", "a file whose devices are not connected" and "a file that resolved and a game that ignores it" apart:
+
+```
+[pad] controller mapping version 1 from …/files/controller-mapping.json: 24 bindings, 1 motors, 0 refused
+[pad] 2020:0112 #1 is device 8, Xbox Wireless Controller
+[pad] 2020:0111 mouse #1 is device 9, ODIN Station Virtual Mouse
+[pad] port 1: 24 of 24 bindings on a connected device. large motor none, small motor the handheld's motor
+```
+
+**each port names a large and a small motor** — one of a device's by its index among that device's vibrators, Dolphin's `Motor 0`, or the handheld's own — and **nothing drives them**: with automatic mapping off nothing vibrates, and the launch line says what each named motor resolved to.
+
+the file is the app's setting rather than anything the emulator writes, so it sits beside `user/` rather than in it: Everything's export and import carry it with the rest of `files/`, and Delete everything removes it with the rest.
+
 ## the two switches
 
 Settings → Controls, both on by default.
 
 | | |
 | --- | --- |
-| **Automatic controller mapping** | every connected controller, by button position, merged into port 1. off hands input to the port rows, and with none drawn a run has no controller. **the app's rather than a game's**: it is not drawn on the per-game screen, and the launch reads it from the app's own store, so a per-game store holding it is never consulted |
-| **Controller vibration** | whether a game may vibrate anything at all. with automatic mapping on, a game's rumble drives every connected controller's motors and the device's own; with it off, the motors the ports name, and with none drawn nothing vibrates. **overridable per game**, so a mapping set up once for the whole install can still be silenced for one title |
+| **Automatic controller mapping** | every connected controller, by button position, merged into port 1. off hands the four ports to the controller mapping, and with no file a run has no controller. **the app's rather than a game's**: it is not drawn on the per-game screen, and the launch reads it from the app's own store, so a per-game store holding it is never consulted |
+| **Controller vibration** | whether a game may vibrate anything at all. with automatic mapping on, a game's rumble drives every connected controller's motors and the device's own; with it off, nothing, since nothing drives the motors the controller mapping names. **overridable per game**, so a mapping set up once for the whole install can still be silenced for one title |
 
 **turning rumble off leaves the pad working**, and the mapping decides where rumble goes rather than whether it does — that is Controller vibration's alone.
 

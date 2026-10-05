@@ -580,6 +580,11 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         boolean automaticMapping =
                 !Boolean.FALSE.equals(Settings.of(this).getAutomaticControllerMapping());
         PadState.setEnabled(automaticMapping);
+        // with it off the ports are the controller mapping's, read here once for the same reason.
+        // the first sweep of the connected devices below is what resolves it.
+        if (!automaticMapping) {
+            PadState.useMapping(ControllerMapping.read(AppStorage.controllerMapping(getFilesDir())));
+        }
         PadRumble.setAutomatic(automaticMapping);
         PadRumble.setEnabled(!Boolean.FALSE.equals(settings.getControllerVibration()));
         // and the loading screen's estimate, read here for the same reason and defaulting the same
