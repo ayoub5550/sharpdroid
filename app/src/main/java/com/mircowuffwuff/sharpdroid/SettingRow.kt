@@ -67,6 +67,10 @@ sealed class SettingRow {
      *
      * [perGame] false for a label whose every row is left off a game's screen, which would otherwise
      * be drawn there over nothing.
+     *
+     * **it is greyed while every row under it is**, which the adapter reads off the list rather than
+     * being told -- see [SettingsAdapter]. a label over a run of rows nobody can tap names a choice
+     * nobody can make.
      */
     data class Header(val title: Int, override val perGame: Boolean = true) : SettingRow()
 

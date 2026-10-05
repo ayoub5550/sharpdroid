@@ -241,7 +241,30 @@ class SettingsAdapter(
             is SettingRow.External -> (holder as ExternalHolder).bind(row)
             is SettingRow.Screen -> (holder as ScreenHolder).bind(row)
         }
-        drawEnabled(holder.itemView, row.enabled)
+        drawEnabled(holder.itemView, enabled(position))
+    }
+
+    /**
+     * whether the row at [position] is drawn enabled.
+     *
+     * **a header is enabled while any row under it is**, up to the next header, so a subsection whose
+     * every row is greyed is greyed with them: the Controller ports label while Automatic controller
+     * mapping is on, and every heading on a port screen over a mapping file this app cannot read. it
+     * is worked out from the list rather than stored on the header, so that no section has a second
+     * value to keep in step with its rows. a header over no rows keeps its colour, there being nothing
+     * for it to agree with.
+     *
+     * **it needs no notification of its own**, because the one write that greys rows, the mapping
+     * switch, already rebinds every row on the list -- see [refresh].
+     */
+    private fun enabled(position: Int): Boolean {
+        if (rows[position] !is SettingRow.Header) return rows[position].enabled
+        var under = position + 1
+        while (under < rows.size && rows[under] !is SettingRow.Header) {
+            if (rows[under].enabled) return true
+            under++
+        }
+        return under == position + 1
     }
 
     /**
@@ -254,8 +277,9 @@ class SettingsAdapter(
      * **the fade is drawn on the root's children rather than on the root**, because the root's alpha
      * is the item animator's: a change that keeps its holder is animated as a move, and that resets
      * the root's animation and its alpha on the way, which would stop a fade there part way through.
-     * a row whose state flips under the user's finger -- the four ports, as Automatic controller
-     * mapping is switched -- fades, and every other bind is simply in the state it belongs in.
+     * a row whose state flips under the user's finger -- the four ports and the label over them, as
+     * Automatic controller mapping is switched -- fades, and every other bind is simply in the state it
+     * belongs in.
      */
     private fun drawEnabled(view: View, enabled: Boolean) {
         view.isEnabled = enabled

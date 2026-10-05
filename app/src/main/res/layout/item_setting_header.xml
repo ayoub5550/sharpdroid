@@ -2,13 +2,24 @@
 <!--
   a subsection label. deliberately not a button: a divider with a name above a run of rows, not
   another screen, because a subsection is a grouping rather than a destination.
+
+  **the label sits in a frame of its own so that it can be greyed with the rows under it.** a greyed
+  row is faded on its root's children rather than on the root, the root's alpha belonging to the
+  list's item animator, so a label that was the root would have nothing to fade. see
+  SettingsAdapter.drawEnabled.
 -->
-<TextView xmlns:android="http://schemas.android.com/apk/res/android"
-    android:id="@+id/title"
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
-    android:layout_height="wrap_content"
-    android:paddingHorizontal="20dp"
-    android:paddingTop="20dp"
-    android:paddingBottom="6dp"
-    android:textAppearance="?attr/textAppearanceLabelLarge"
-    android:textColor="?attr/colorPrimary" />
+    android:layout_height="wrap_content">
+
+    <TextView
+        android:id="@+id/title"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingHorizontal="20dp"
+        android:paddingTop="20dp"
+        android:paddingBottom="6dp"
+        android:textAppearance="?attr/textAppearanceLabelLarge"
+        android:textColor="?attr/colorPrimary" />
+
+</FrameLayout>
