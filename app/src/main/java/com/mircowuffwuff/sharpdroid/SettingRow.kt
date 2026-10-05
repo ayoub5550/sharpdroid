@@ -36,6 +36,24 @@ sealed class SettingRow {
     open val perGame: Boolean = true
 
     /**
+     * whether this row takes a tap, or is drawn greyed out and ignores one.
+     *
+     * **a row is disabled by another row's value**, and the controller port rows are the case: while
+     * Automatic controller mapping is on, every controller plays on port 1 whatever a port says, so a
+     * port row that opened would be a screen of choices that change nothing. greyed rather than left
+     * out, because the mapping stays stored and comes back the moment the switch is turned off -- a row
+     * that vanished would read as the mapping being gone.
+     */
+    open val enabled: Boolean = true
+
+    /**
+     * what the adapter finds this row by across rebuilds of its list. the key, for a row that stores a
+     * preference; a row that stores something else names its own, so a write to it still redraws the
+     * one row rather than the whole list -- see [SettingsAdapter.submit].
+     */
+    open val id: String? get() = key
+
+    /**
      * a divider with a label, for a subsection inside a section.
      *
      * **a label above a run of rows, never another button press.** a subsection is a grouping and
@@ -45,8 +63,11 @@ sealed class SettingRow {
      * is a run of two or three rows put behind a press for tidiness; a page long enough to want
      * headers of its own, reached from a [Screen] row that reads out what is chosen inside it, is a
      * destination that answers a question rather than a grouping that hides one.
+     *
+     * [perGame] false for a label whose every row is left off a game's screen, which would otherwise
+     * be drawn there over nothing.
      */
-    data class Header(val title: Int) : SettingRow()
+    data class Header(val title: Int, override val perGame: Boolean = true) : SettingRow()
 
     /** a boolean, drawn as a Material switch. */
     data class Switch(
@@ -113,33 +134,43 @@ sealed class SettingRow {
     }
 
     /**
-     * a row that opens a screen of its own, showing what is currently chosen underneath it.
+     * a row that opens a screen or a dialog of its own, showing what is currently chosen underneath it.
      *
      * **[value] is a string rather than a resource**, which is the difference between this and
-     * [Dropdown]: what it shows is the name of something on the device -- a build -- rather than one
-     * of a fixed set of labels this app shipped.
+     * [Dropdown]: what it shows is the name of something on the device -- a build, a controller --
+     * rather than one of a fixed set of labels this app shipped.
      *
-     * **there is no `enabled` flag**, because nothing here greys a row out: exactly one build ships
-     * per APK, so there is no recommendation to follow and no toggle to govern the build row. a flag
-     * with no caller is a flag that is wrong by the time something wants it.
-     *
-     * **[key] is null for a screen that stores nothing.** the build and driver rows each name a stored
-     * choice, and the long press puts it back; the folder manager is a place to go rather than a value
-     * that was picked, so there is no default for it to go back to and no gesture on it.
+     * **[key] is null for a row that stores no preference.** the build and driver rows each name a
+     * stored choice, and the long press puts it back; the folder manager is a place to go rather than
+     * a value that was picked, so there is no default for it to go back to and no gesture on it. the
+     * controller mapping's rows store into a file of their own rather than a preference, so they carry
+     * an [id] instead and their way back is [reset].
      */
     data class Screen(
         override val key: String?,
         val title: Int,
-        val summary: Int,
+        /** a line explaining the row, or null for a row whose title already says what it is. */
+        val summary: Int?,
         val value: String,
         /**
          * whether [value] names something, or reports that there is nothing.
          *
          * the value line is drawn in the accent, which is what marks it as the answer to the row.
          * "None" is not an answer of that kind -- it is the absence of one -- so it is drawn in the
-         * body colour instead, and reads as a state rather than as a choice somebody made.
+         * body colour instead, and reads as a state rather than as a choice somebody made. for a row
+         * with a [reset], it is also whether the long press has anything to put back.
          */
         val chosen: Boolean = true,
+        /** filled into [title] for a title with a number in it -- the four controller ports. */
+        val titleArg: Int? = null,
+        override val enabled: Boolean = true,
+        override val perGame: Boolean = true,
+        override val id: String? = key,
+        /**
+         * the long press's way back, for a row whose value is not a preference. it is offered with the
+         * same Use default question a stored row's long press asks, and only while [chosen].
+         */
+        val reset: (() -> Unit)? = null,
         val onClick: () -> Unit,
     ) : SettingRow()
 

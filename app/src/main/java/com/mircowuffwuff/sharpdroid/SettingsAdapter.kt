@@ -108,7 +108,9 @@ class SettingsAdapter(
      * an object reference cannot.
      *
      * **keys are unique within a section**, which is what makes this a lookup rather than a guess;
-     * the identity test stays in front of it for the rows that carry no key at all.
+     * the identity test stays in front of it for the rows that carry no key at all. it is
+     * [SettingRow.id] that is compared, which is the key for every row that has one and a name of
+     * the row's own for a row storing outside the preferences.
      *
      * a row that is in no list, or a rebuild that changed the list's length, falls back to [submit]
      * -- the affordance appearing inside a row never changes the length, and the one row set that
@@ -116,7 +118,7 @@ class SettingsAdapter(
      */
     fun submit(newRows: List<SettingRow>, changed: SettingRow) {
         val index =
-            rows.indexOfFirst { it === changed || (changed.key != null && it.key == changed.key) }
+            rows.indexOfFirst { it === changed || (changed.id != null && it.id == changed.id) }
         if (index < 0 || newRows.size != rows.size) {
             submit(newRows)
             return
@@ -133,8 +135,8 @@ class SettingsAdapter(
      * the payload is the same one [submit] sends, and for the same reason: without it the holder is
      * cross-faded against a second copy of itself.
      */
-    fun rebind(key: String) {
-        val index = rows.indexOfFirst { it.key == key }
+    fun rebind(id: String) {
+        val index = rows.indexOfFirst { it.id == id }
         if (index >= 0) notifyItemChanged(index, CHANGED)
     }
 
@@ -229,7 +231,8 @@ class SettingsAdapter(
     }
 
     override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
-        when (val row = rows[position]) {
+        val row = rows[position]
+        when (row) {
             is SettingRow.Header -> (holder as HeaderHolder).bind(row)
             is SettingRow.Switch -> (holder as SwitchHolder).bind(row)
             is SettingRow.Dropdown -> (holder as ValueHolder).bind(row)
@@ -237,6 +240,35 @@ class SettingsAdapter(
             is SettingRow.Colour -> (holder as ColourHolder).bind(row)
             is SettingRow.External -> (holder as ExternalHolder).bind(row)
             is SettingRow.Screen -> (holder as ScreenHolder).bind(row)
+        }
+        drawEnabled(holder.itemView, row.enabled)
+    }
+
+    /**
+     * a row greyed out or not, for every row type at once.
+     *
+     * **the whole row is what takes a tap** -- a switch's own control is not clickable, see
+     * item_setting_switch.xml -- so disabling the row's root is the whole of making it ignore one,
+     * the long press included.
+     *
+     * **the fade is drawn on the root's children rather than on the root**, because the root's alpha
+     * is the item animator's: a change that keeps its holder is animated as a move, and that resets
+     * the root's animation and its alpha on the way, which would stop a fade there part way through.
+     * a row whose state flips under the user's finger -- the four ports, as Automatic controller
+     * mapping is switched -- fades, and every other bind is simply in the state it belongs in.
+     */
+    private fun drawEnabled(view: View, enabled: Boolean) {
+        view.isEnabled = enabled
+        val group = view as? ViewGroup ?: return
+        val alpha = if (enabled) 1f else DISABLED_ALPHA
+        for (i in 0 until group.childCount) {
+            val child = group.getChildAt(i)
+            child.animate().cancel()
+            if (changing && child.alpha != alpha) {
+                child.animate().alpha(alpha).setDuration(FADE_MS).start()
+            } else {
+                child.alpha = alpha
+            }
         }
     }
 
@@ -250,8 +282,17 @@ class SettingsAdapter(
     private inner class ScreenHolder(val binding: ItemSettingValueBinding) :
         RecyclerView.ViewHolder(binding.root) {
         fun bind(row: SettingRow.Screen) {
-            binding.title.setText(row.title)
-            binding.summary.setText(row.summary)
+            val arg = row.titleArg
+            if (arg == null) {
+                binding.title.setText(row.title)
+            } else {
+                binding.title.text = binding.root.context.getString(row.title, arg)
+            }
+            // set on both branches, for the reason the value's colour is below: a recycled holder
+            // keeps whatever the row it last drew left on it.
+            val summary = row.summary
+            binding.summary.isVisible = summary != null
+            if (summary != null) binding.summary.setText(summary)
             binding.value.text = row.value
             // set on both branches rather than only the plain one, because a holder is recycled and
             // the colour of the row it was last bound to would otherwise stay on it.
@@ -264,7 +305,16 @@ class SettingsAdapter(
 
             binding.root.setOnClickListener { row.onClick() }
             // a screen that stores nothing has no default to go back to, so it has no long press.
-            binding.root.setOnLongClickListener { row.key?.let { offerDefault(it, row) } ?: false }
+            // a row storing outside the preferences has its own way back, offered while it is set.
+            binding.root.setOnLongClickListener {
+                val key = row.key
+                val reset = row.reset
+                when {
+                    key != null -> offerDefault(key, row)
+                    reset != null && row.chosen -> offerReset(reset, row)
+                    else -> false
+                }
+            }
             useGlobal(binding.useGlobal, row.key, row)
         }
     }
@@ -592,6 +642,29 @@ class SettingsAdapter(
         return true
     }
 
+    /**
+     * the same way back for a row whose value is not a preference -- see [SettingRow.Screen.reset].
+     *
+     * **the same question in the same words**, because what it does is the same thing to a different
+     * store: a binding or a motor put back is the row as it was before anybody chose, which for these
+     * rows is nothing bound.
+     */
+    private fun offerReset(reset: () -> Unit, row: SettingRow): Boolean {
+        val context = recycler?.context ?: return false
+        val message = DialogMessageBinding.inflate(LayoutInflater.from(context))
+        message.message.setText(R.string.setting_use_default_message)
+        MaterialAlertDialogBuilder(context)
+            .setTitle(R.string.setting_use_default_title)
+            .setView(message.root)
+            .setPositiveButton(R.string.setting_use_default) { _, _ ->
+                reset()
+                onChanged(row)
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+        return true
+    }
+
     private var recycler: RecyclerView? = null
 
     override fun onAttachedToRecyclerView(recyclerView: RecyclerView) {
@@ -639,6 +712,9 @@ class SettingsAdapter(
          * the other reason to keep it short.
          */
         const val FADE_MS = 120L
+
+        /** what a disabled row is drawn at: Material's own opacity for disabled content. */
+        const val DISABLED_ALPHA = 0.38f
 
         const val TYPE_HEADER = 0
         const val TYPE_SWITCH = 1
