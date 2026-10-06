@@ -81,7 +81,8 @@ sealed class SettingRow {
     data class Switch(
         override val key: String,
         val title: Int,
-        val summary: Int,
+        /** a line explaining the row, or null for a row whose title already says what it is. */
+        val summary: Int?,
         val default: Boolean,
         override val perGame: Boolean = true,
     ) : SettingRow()

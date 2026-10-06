@@ -5,10 +5,13 @@ import android.graphics.drawable.GradientDrawable
 import android.text.SpannableString
 import android.text.Spanned
 import android.text.style.ForegroundColorSpan
+import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.LinearLayout
 import androidx.core.view.isVisible
+import androidx.core.view.updateLayoutParams
 import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.color.MaterialColors
@@ -393,7 +396,16 @@ class SettingsAdapter(
         RecyclerView.ViewHolder(binding.root) {
         fun bind(row: SettingRow.Switch) {
             binding.title.setText(row.title)
-            binding.summary.setText(row.summary)
+            // set on both branches, as a screen row's is: a recycled holder keeps whatever the row it
+            // last drew left on it.
+            val summary = row.summary
+            binding.summary.isVisible = summary != null
+            if (summary != null) binding.summary.setText(summary)
+            // a title alone is centred on the switch and a title over a summary is not -- see
+            // item_setting_switch.xml. set on both branches for the same reason.
+            binding.text.updateLayoutParams<LinearLayout.LayoutParams> {
+                gravity = if (summary == null) Gravity.CENTER_VERTICAL else Gravity.TOP
+            }
 
             // set without the listener attached, or restoring the stored state would read as the
             // user flipping it -- which would write the key and make every untouched row "set" the

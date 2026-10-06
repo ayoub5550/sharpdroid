@@ -7,6 +7,12 @@
   down the moment a button appears under the title, so the control moves as a value is overridden -
   and on a list of switches that reads as the row shifting rather than as the row gaining something.
 
+  **a title with no summary under it is centred on the switch, and a title over one is not.** the
+  switch's view is 48dp tall, its touch target, so a title alone at the top would sit above the
+  switch's middle; a title over a summary is centred by its box but not by its ink, and sits lower
+  than the switch looks. the adapter sets which, row by row, since the layout cannot ask whether the
+  summary is shown.
+
   the button is item_setting_value.xml's, and that file says when it is drawn and why.
 -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
@@ -25,6 +31,7 @@
         android:orientation="horizontal">
 
         <LinearLayout
+            android:id="@+id/text"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
