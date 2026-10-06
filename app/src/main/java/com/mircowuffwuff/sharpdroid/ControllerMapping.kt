@@ -342,16 +342,16 @@ class ControllerMapping private constructor(
         }
 
         /**
-         * an identity as the settings screens draw it: `Xbox Wireless Controller #2`. [describe]
-         * without the quotes, which mark where a name ends in a log line and are noise on a row that
-         * holds nothing else.
+         * an identity as the settings screens draw it: `Xbox Wireless Controller 2`. [describe]
+         * without the quotes or the `#`, which mark where a name ends and its number begins in a log
+         * line and are noise on a row that holds nothing else.
          */
         @JvmStatic
         fun label(identity: String): String {
             val parts = identity.split('\u0000')
             if (parts.size != 3) return identity
             val role = if (parts[1].isEmpty()) "" else " ${parts[1]}"
-            return "${parts[0]}$role #${parts[2]}"
+            return "${parts[0]}$role ${parts[2]}"
         }
 
         /**
