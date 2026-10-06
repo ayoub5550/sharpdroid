@@ -182,7 +182,8 @@
     <string name="target_l3">L3</string>
     <string name="target_r3">R3</string>
 
-    <!-- a binding: the device, then its input in Android's own name for it. -->
+    <!-- a binding: the device, then its input in Android's own name for it. a device that is away is
+         marked (not connected) on a binding row and on a Controls port row alike. -->
     <string name="controller_not_set">Not set</string>
     <string name="controller_binding">%1$s: %2$s</string>
     <string name="controller_not_connected">%1$s (not connected)</string>
