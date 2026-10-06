@@ -141,9 +141,11 @@ sealed class SettingRow {
     /**
      * a row that opens a screen or a dialog of its own, showing what is currently chosen underneath it.
      *
-     * **[value] is a string rather than a resource**, which is the difference between this and
+     * **[value] is text rather than a resource**, which is the difference between this and
      * [Dropdown]: what it shows is the name of something on the device -- a build, a controller --
-     * rather than one of a fixed set of labels this app shipped.
+     * rather than one of a fixed set of labels this app shipped. it may carry colour spans, which
+     * override the accent for the part they cover: a port row draws a device that is not connected in
+     * the body colour.
      *
      * **[key] is null for a row that stores no preference.** the build and driver rows each name a
      * stored choice, and the long press puts it back; the folder manager is a place to go rather than
@@ -156,7 +158,7 @@ sealed class SettingRow {
         val title: Int,
         /** a line explaining the row, or null for a row whose title already says what it is. */
         val summary: Int?,
-        val value: String,
+        val value: CharSequence,
         /**
          * whether [value] names something, or reports that there is nothing.
          *
@@ -168,6 +170,16 @@ sealed class SettingRow {
         val chosen: Boolean = true,
         /** filled into [title] for a title with a number in it -- the four controller ports. */
         val titleArg: Int? = null,
+        /**
+         * a glyph drawn before the row's text, or null for none. the four controller ports carry one,
+         * as Eden draws a controller beside each of its players.
+         */
+        val icon: Int? = null,
+        /**
+         * whether [icon] is drawn in the accent rather than the body colour: the split [chosen] makes
+         * for [value], between an answer and the absence of one.
+         */
+        val iconAccented: Boolean = false,
         override val enabled: Boolean = true,
         override val perGame: Boolean = true,
         override val id: String? = key,

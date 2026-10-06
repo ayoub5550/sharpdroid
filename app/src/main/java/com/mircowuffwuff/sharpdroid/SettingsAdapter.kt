@@ -317,6 +317,23 @@ class SettingsAdapter(
             val summary = row.summary
             binding.summary.isVisible = summary != null
             if (summary != null) binding.summary.setText(summary)
+            // and the glyph the same way, for the same reason. its tint is the row's, so the layout
+            // carries none.
+            val icon = row.icon
+            binding.icon.isVisible = icon != null
+            if (icon != null) {
+                binding.icon.setImageResource(icon)
+                binding.icon.imageTintList = ColorStateList.valueOf(
+                    MaterialColors.getColor(
+                        binding.icon,
+                        if (row.iconAccented) {
+                            MaterialR.attr.colorPrimary
+                        } else {
+                            MaterialR.attr.colorOnSurfaceVariant
+                        },
+                    )
+                )
+            }
             binding.value.text = row.value
             // set on both branches rather than only the plain one, because a holder is recycled and
             // the colour of the row it was last bound to would otherwise stay on it.

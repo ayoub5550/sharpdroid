@@ -142,7 +142,7 @@ a subsection is a label above a run of rows rather than another button press.
 | App | Theme, Theme color while Custom is chosen, Fullscreen mode, Estimate loading progress, Resume games on return |
 | Emulation | under a SharpEmu label, SharpEmu build; under a FEXCore label, JIT accuracy and Probe host instructions |
 | Graphics | Internal resolution, and under a Vulkan label, Graphics driver and Disk shader cache |
-| Controls | Controller vibration, Automatic controller mapping, and under a Controller ports label, Port 1 to Port 4, each opening that port's bindings and motors. a game's own Controls screen draws Controller vibration alone, the mapping being the app's |
+| Controls | Controller vibration, Automatic controller mapping, and under a Controller ports label, Port 1 to Port 4, each opening that port's bindings and motors. a port's controller glyph is filled in the accent while a device one of its bindings names is connected, as Eden marks a connected player, and an outline otherwise; the devices under it are drawn the same way one by one, a device that is not connected in the body colour and marked (not connected). a game's own Controls screen draws Controller vibration alone, the mapping being the app's |
 | Game files | Game folders, and All files access where the platform has it |
 | User data | none. the card opens `UserDataActivity` |
 

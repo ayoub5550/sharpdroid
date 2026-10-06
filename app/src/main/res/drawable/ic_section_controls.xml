@@ -1,5 +1,5 @@
 <!--
-  the Controls section: what a person plays with.
+  the Controls section, and each controller port's row inside it: what a person plays with.
 
   **a gamepad rather than a hand, a d-pad or a joystick.** a hand reads as touch, which is one of the
   things this section will hold rather than the whole of it; a bare d-pad or stick names one control on
@@ -7,8 +7,9 @@
   silhouette is the only one that reads as "the thing you hold" at a glance, which is the requirement
   for an icon in a grid.
 
-  the section icons are Material's own shapes, at Material Symbols' 960 viewport, and are tinted with
-  the theme's primary colour by the layout rather than here - a vector carrying a colour of its own is
+  the section icons are Material's own shapes, at Material Symbols' 960 viewport, and are tinted by
+  the layout that draws them rather than here, the theme's primary colour on a section button and the
+  body colour on a port's row - a vector carrying a colour of its own is
   one that is wrong in three of the four palettes, which is what the download's own
   `?attr/colorControlNormal` would have been.
 -->

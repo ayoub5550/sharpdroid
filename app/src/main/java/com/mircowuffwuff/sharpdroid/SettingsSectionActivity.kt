@@ -4,11 +4,17 @@ import android.content.Intent
 import android.graphics.drawable.GradientDrawable
 import android.hardware.input.InputManager
 import android.os.Bundle
+import android.text.SpannableStringBuilder
+import android.text.Spanned
+import android.text.style.ForegroundColorSpan
 import android.view.LayoutInflater
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
+import com.google.android.material.color.MaterialColors
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
+// a colour role is Material's own attribute, which this module's non-transitive R does not carry.
+import com.google.android.material.R as MaterialR
 import com.mircowuffwuff.sharpdroid.databinding.ActivitySettingsSectionBinding
 import com.mircowuffwuff.sharpdroid.databinding.DialogColourPickerBinding
 import java.io.File
@@ -242,9 +248,7 @@ class SettingsSectionActivity : AppCompatActivity() {
         if (mapsControllers()) {
             mapping.reload()
             numbers = DeviceNumbers().also { it.update() }
-            if (section == SettingsActivity.Section.CONTROLLER_PORT) {
-                getSystemService(InputManager::class.java)?.registerInputDeviceListener(devices, null)
-            }
+            getSystemService(InputManager::class.java)?.registerInputDeviceListener(devices, null)
         }
         // **a row that is part way in or out is holding the list one row away from what the store
         // says, and it is doing that deliberately.** this method runs before the pass that moves it,
@@ -265,9 +269,10 @@ class SettingsSectionActivity : AppCompatActivity() {
             section == SettingsActivity.Section.CONTROLLER_PORT)
 
     /**
-     * a device arriving, leaving or changing, while a port screen is in front: its rows say which
-     * bound devices are connected and its motor rows what can buzz, and both move with the devices.
-     * the Controls rows name devices from the file alone, so that screen does not listen.
+     * a device arriving, leaving or changing, while Controls or a port screen is in front. a port
+     * screen's rows say which bound devices are connected and its motor rows what can buzz, and each
+     * Controls port row's glyph says whether the port is connected, so all of them move with the
+     * devices.
      */
     private val devices = object : InputManager.InputDeviceListener {
         override fun onInputDeviceAdded(deviceId: Int) = devicesChanged()
@@ -679,6 +684,12 @@ class SettingsSectionActivity : AppCompatActivity() {
      * one port's row: the devices its bindings use, which is what tells four ports apart at a glance,
      * or that it maps nothing.
      *
+     * **its glyph is filled in the accent while the port is connected**, as Eden marks a connected
+     * player, and the Controls glyph's outline in the body colour otherwise. connected is what the
+     * guest is told: a device that one of the port's bindings names is here. a motor's device does
+     * not count, as it does not in [PadState]. the devices on the line under the title are drawn the
+     * same way one by one -- see [devicesLine].
+     *
      * **a mapping file this app cannot read greys every port and says why**, whatever the switch
      * says: a port screen over it could only show nothing and write over a mapping that is somebody's
      * work. see [MappingFile].
@@ -691,10 +702,14 @@ class SettingsSectionActivity : AppCompatActivity() {
             unwritable == MappingFile.Unwritable.NEWER -> getString(R.string.controller_mapping_newer)
             unwritable == MappingFile.Unwritable.UNREADABLE ->
                 getString(R.string.controller_mapping_unreadable)
-            devices.isNotEmpty() -> devices.joinToString(", ") { ControllerMapping.label(it) }
+            devices.isNotEmpty() -> devicesLine(devices)
             // a port naming nothing but this device's own motor.
             inUse -> getString(R.string.controller_motor_handheld)
             else -> getString(R.string.controller_port_empty)
+        }
+        val connected = unwritable == null && (0 until PadTarget.COUNT).any { target ->
+            val bound = mapping.binding(port, target)
+            bound != null && numbers.deviceIdOf(bound.device) != DeviceNumbers.NO_DEVICE
         }
         return SettingRow.Screen(
             key = null,
@@ -703,6 +718,8 @@ class SettingsSectionActivity : AppCompatActivity() {
             value = value,
             chosen = inUse,
             titleArg = port + 1,
+            icon = if (connected) R.drawable.ic_controller_connected else R.drawable.ic_section_controls,
+            iconAccented = connected,
             enabled = !automatic && unwritable == null,
             perGame = false,
             id = "port-$port",
@@ -710,6 +727,28 @@ class SettingsSectionActivity : AppCompatActivity() {
         ) {
             startActivity(section(SettingsActivity.Section.CONTROLLER_PORT).putExtra(EXTRA_PORT, port))
         }
+    }
+
+    /**
+     * a port row's devices, each in the accent the row's value line is drawn in while it is connected,
+     * and in the body colour with (not connected) after it while it is not, as a binding row says it.
+     * the comma after a name goes with that name.
+     */
+    private fun devicesLine(devices: List<String>): CharSequence {
+        val absent = MaterialColors.getColor(binding.root, MaterialR.attr.colorOnSurfaceVariant)
+        val line = SpannableStringBuilder()
+        devices.forEachIndexed { at, device ->
+            val start = line.length
+            val label = ControllerMapping.label(device)
+            val here = numbers.deviceIdOf(device) != DeviceNumbers.NO_DEVICE
+            line.append(if (here) label else getString(R.string.controller_not_connected, label))
+            if (at < devices.size - 1) line.append(", ")
+            if (!here) {
+                line.setSpan(
+                    ForegroundColorSpan(absent), start, line.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
+        }
+        return line
     }
 
     /**
