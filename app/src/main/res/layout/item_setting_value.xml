@@ -24,14 +24,15 @@
     android:paddingVertical="14dp">
 
     <!-- **a glyph before the text, drawn only for a row that names one**: the four controller ports,
-         as Eden draws a controller beside each of its players. 32dp, between Eden's 24dp, which reads
+         as Eden draws a controller beside each of its players. 30dp, between Eden's 24dp, which reads
          as small beside two lines of text, and Material's 40dp for what leads a two-line item, which
-         turns a glyph into a toy. its edge sits on the 20dp line the heading and every other row's
-         text start on. the row tints it, so it carries no colour here. -->
+         turns a glyph into a toy: 28dp still reads small, and 32dp already leans toward the toy. its
+         edge sits on the 20dp line the heading and every other row's text start on. the row tints it,
+         so it carries no colour here. -->
     <ImageView
         android:id="@+id/icon"
-        android:layout_width="32dp"
-        android:layout_height="32dp"
+        android:layout_width="30dp"
+        android:layout_height="30dp"
         android:layout_gravity="center_vertical"
         android:layout_marginEnd="16dp"
         android:contentDescription="@null"
