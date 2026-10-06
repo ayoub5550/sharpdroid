@@ -426,14 +426,7 @@ class SettingsSectionActivity : AppCompatActivity() {
         // to start. the flag stays reachable, and `--ez strict true` on a launch still passes it,
         // because the merge reads the intent before it reads the store.
         SettingRow.Header(R.string.settings_group_sharpemu),
-        SettingRow.Screen(
-            key = Settings.KEY_BUILD,
-            title = R.string.setting_build,
-            summary = R.string.setting_build_summary,
-            value = chosenBuildLabel(),
-        ) {
-            startActivity(manager(BuildsActivity::class.java))
-        },
+        buildRow(),
         // no FEXCore version row beside this one. exactly one FEXCore is linked into the host layer
         // and there is nothing for a choice to select between, so a dropdown with one entry would
         // offer a capability the app does not have.
@@ -469,7 +462,28 @@ class SettingsSectionActivity : AppCompatActivity() {
     )
 
     /**
-     * what the build row shows underneath itself.
+     * the build row: the build a launch will run, and the way into the manager.
+     *
+     * **no build at all is the absence of an answer rather than one**, so it is drawn in the body
+     * colour as every row's None is. only a debug app with nothing bundled and nothing staged gets
+     * there.
+     */
+    private fun buildRow(): SettingRow {
+        val build = chosenBuildLabel()
+        return SettingRow.Screen(
+            key = Settings.KEY_BUILD,
+            title = R.string.setting_build,
+            summary = R.string.setting_build_summary,
+            value = build ?: getString(R.string.setting_build_none),
+            chosen = build != null,
+        ) {
+            startActivity(manager(BuildsActivity::class.java))
+        }
+    }
+
+    /**
+     * what the build row shows underneath itself, or null when there is no build on the device at
+     * all.
      *
      * **it always names a concrete build**, which is what shipping exactly one buys: nothing stored
      * means the bundled build, so the row reads its name rather than describing a rule. a subtitle
@@ -490,7 +504,7 @@ class SettingsSectionActivity : AppCompatActivity() {
      * it reads a `meta.json` on the main thread, which is one small file: the alternative is a row
      * that draws empty and fills in a frame later, on a screen that is otherwise synchronous.
      */
-    private fun chosenBuildLabel(): CharSequence {
+    private fun chosenBuildLabel(): CharSequence? {
         val internalRoot = AppStorage.installedBuilds(filesDir)
         val staged = AppStorage.stagedBuilds(getExternalFilesDir(null)!!)
         // **the bundled build is named from the APK's own asset**, which is what lets this row be
@@ -503,7 +517,6 @@ class SettingsSectionActivity : AppCompatActivity() {
             // a debug app bundles none, so it falls back to what a launch would run: the most
             // recently staged build. naming it beats describing the rule that found it.
             ?: return SharpEmuBuild.mostRecent(staged, internalRoot)?.name
-                ?: getString(R.string.setting_build_none)
         val build = bundled?.takeIf { it.folder == folder }
             ?: SharpEmuBuild.read(File(internalRoot, folder))
             ?: SharpEmuBuild.read(File(staged, folder))
