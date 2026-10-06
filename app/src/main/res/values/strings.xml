@@ -126,11 +126,8 @@
     <string name="colour_preview">Preview</string>
     <string name="colour_preview_value">Selected</string>
 
-    <!-- **the mapping row says both halves of what it does**, because off is not nothing: it hands
-         input to the ports under it, and a summary describing only on would leave somebody who turned
-         it off with greyed rows coming back to life and no sentence saying why. -->
     <string name="setting_automatic_controller_mapping">Automatic controller mapping</string>
-    <string name="setting_automatic_controller_mapping_summary">Play on port 1 with every connected controller, mapped by button position. Turn off to map the ports below yourself.</string>
+    <string name="setting_automatic_controller_mapping_summary">Turn off to map the ports below yourself.</string>
     <string name="setting_controller_vibration">Controller vibration</string>
     <string name="setting_controller_vibration_summary">Let a game drive the vibration motors of your controllers and this Android device.</string>
 
@@ -145,7 +142,7 @@
     <string name="settings_group_vibration">Vibration</string>
     <string name="setting_controller_port">Port %1$d</string>
     <!-- a port row's value: the devices its bindings use, or this. -->
-    <string name="controller_port_empty">Nothing mapped</string>
+    <string name="controller_port_empty">Not mapped yet</string>
     <!-- the two reasons every port is greyed whatever the switch says. a mapping file is written by
          this app, so the first is somebody who went back to an older version, and the second is a
          file edited by hand. Reset all settings clears either. -->
@@ -206,7 +203,7 @@
     <string name="capture_clear">Clear</string>
     <string name="capture_target_in_group">%1$s: %2$s</string>
     <string name="setting_fullscreen">Fullscreen mode</string>
-    <string name="setting_fullscreen_summary">Hide the status and navigation bars everywhere. Swipe from an edge to bring them back. A game is always fullscreen.</string>
+    <string name="setting_fullscreen_summary">Always hide the status and navigation bars everywhere.</string>
 
     <!-- the loading screen's estimate, and the one App row that ships on rather than off.
 
