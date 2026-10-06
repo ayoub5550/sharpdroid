@@ -188,9 +188,7 @@
     <string name="controller_not_connected">%1$s (not connected)</string>
 
     <string name="controller_motor_large">Large motor</string>
-    <string name="controller_motor_large_summary">Where a game\'s strong rumble goes.</string>
     <string name="controller_motor_small">Small motor</string>
-    <string name="controller_motor_small_summary">Where a game\'s light rumble goes.</string>
     <string name="controller_motor_none">None</string>
     <!-- the handheld's own motor, worded the way the Controller vibration summary names the device. -->
     <string name="controller_motor_handheld">This device</string>

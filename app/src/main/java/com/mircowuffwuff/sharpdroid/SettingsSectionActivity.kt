@@ -838,6 +838,9 @@ class SettingsSectionActivity : AppCompatActivity() {
      * one of a port's two motors: which one a game's large or small rumble drives, or none -- marked
      * [SettingRow.Absent] when it is not available right now, as a binding on a device that is away.
      *
+     * **no line explaining it**, as a binding row has none: Large motor and Small motor say what they
+     * are, and the Vibration heading above them says what they are for.
+     *
      * [present] is every motor connected now, read once for the two rows.
      */
     private fun motorRow(row: Int, present: List<ControllerMapping.Motor>): SettingRow {
@@ -854,11 +857,7 @@ class SettingsSectionActivity : AppCompatActivity() {
         return SettingRow.Screen(
             key = null,
             title = title,
-            summary = if (row == 0) {
-                R.string.controller_motor_large_summary
-            } else {
-                R.string.controller_motor_small_summary
-            },
+            summary = null,
             value = value,
             chosen = motor != null,
             enabled = mapping.unwritable == null,
