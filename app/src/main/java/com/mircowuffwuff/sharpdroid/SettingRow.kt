@@ -1,5 +1,8 @@
 package com.mircowuffwuff.sharpdroid
 
+import android.text.SpannableString
+import android.text.Spanned
+
 /**
  * one row in a settings section.
  *
@@ -143,9 +146,9 @@ sealed class SettingRow {
      *
      * **[value] is text rather than a resource**, which is the difference between this and
      * [Dropdown]: what it shows is the name of something on the device -- a build, a controller --
-     * rather than one of a fixed set of labels this app shipped. it may carry colour spans, which
-     * override the accent for the part they cover: a port row draws a device that is not connected in
-     * the body colour.
+     * rather than one of a fixed set of labels this app shipped. a part of it may be marked [Absent],
+     * for a name whose thing is not there: a build or a driver that is no longer on the device, a
+     * controller that is not connected, a motor that is not available.
      *
      * **[key] is null for a row that stores no preference.** the build and driver rows each name a
      * stored choice, and the long press puts it back; the folder manager is a place to go rather than
@@ -225,5 +228,22 @@ sealed class SettingRow {
         val checked: Boolean,
         val onClick: () -> Unit,
     ) : SettingRow()
+
+    /**
+     * a span marking part of a [Screen.value] as naming something that is not there. the adapter
+     * draws what it covers in the body colour, where the rest of the line takes the accent.
+     *
+     * **a mark rather than a colour**, because a row's colours are the adapter's: [Screen.chosen] and
+     * [Screen.iconAccented] are answered there too, from the theme the list is drawn in. a row says
+     * what is absent and never which colour that is.
+     */
+    class Absent
+
+    companion object {
+        /** [text] marked [Absent] from end to end. */
+        fun absent(text: CharSequence): CharSequence = SpannableString(text).apply {
+            setSpan(Absent(), 0, length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        }
+    }
 
 }

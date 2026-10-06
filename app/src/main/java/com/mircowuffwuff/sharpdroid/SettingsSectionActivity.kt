@@ -5,16 +5,11 @@ import android.graphics.drawable.GradientDrawable
 import android.hardware.input.InputManager
 import android.os.Bundle
 import android.text.SpannableStringBuilder
-import android.text.Spanned
-import android.text.style.ForegroundColorSpan
 import android.view.LayoutInflater
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
-import com.google.android.material.color.MaterialColors
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
-// a colour role is Material's own attribute, which this module's non-transitive R does not carry.
-import com.google.android.material.R as MaterialR
 import com.mircowuffwuff.sharpdroid.databinding.ActivitySettingsSectionBinding
 import com.mircowuffwuff.sharpdroid.databinding.DialogColourPickerBinding
 import java.io.File
@@ -488,12 +483,14 @@ class SettingsSectionActivity : AppCompatActivity() {
      *
      * **a build that is not there says so rather than showing its name.** a folder can go --
      * deleted from a PC, or the external volume wiped -- and a row that went on naming it would leave
-     * the game failing to start as the only place a user could find out.
+     * the game failing to start as the only place a user could find out. the sentence is marked
+     * [SettingRow.Absent], as a controller that is away is: the choice is still stored, and the long
+     * press still puts it back.
      *
      * it reads a `meta.json` on the main thread, which is one small file: the alternative is a row
      * that draws empty and fills in a frame later, on a screen that is otherwise synchronous.
      */
-    private fun chosenBuildLabel(): String {
+    private fun chosenBuildLabel(): CharSequence {
         val internalRoot = AppStorage.installedBuilds(filesDir)
         val staged = AppStorage.stagedBuilds(getExternalFilesDir(null)!!)
         // **the bundled build is named from the APK's own asset**, which is what lets this row be
@@ -510,7 +507,7 @@ class SettingsSectionActivity : AppCompatActivity() {
         val build = bundled?.takeIf { it.folder == folder }
             ?: SharpEmuBuild.read(File(internalRoot, folder))
             ?: SharpEmuBuild.read(File(staged, folder))
-            ?: return getString(R.string.setting_build_missing, folder)
+            ?: return SettingRow.absent(getString(R.string.setting_build_missing, folder))
         return build.name
     }
 
@@ -620,18 +617,19 @@ class SettingsSectionActivity : AppCompatActivity() {
      *
      * **a package that is not there says so rather than showing its name.** a staged directory can go
      * -- deleted from a PC, or the external volume wiped -- and a row that went on naming it would
-     * leave a launch quietly falling back to the system driver as the only place to find out.
+     * leave a launch quietly falling back to the system driver as the only place to find out. the
+     * sentence is marked [SettingRow.Absent], as a missing build's is.
      *
      * it reads a `meta.json`, which is one small file, on the main thread: the alternative is a row
      * that draws empty and fills in a frame later on a screen that is otherwise synchronous.
      */
-    private fun chosenDriverLabel(): String {
+    private fun chosenDriverLabel(): CharSequence {
         val folder = settings.driver
         if (GpuDriver.isSystem(folder)) return getString(R.string.driver_system)
         val internalRoot = AppStorage.installedDrivers(filesDir)
         val staged = AppStorage.stagedDrivers(getExternalFilesDir(null)!!)
         val driver = GpuDriver.resolve(folder!!, internalRoot, staged)
-            ?: return getString(R.string.setting_driver_missing, folder)
+            ?: return SettingRow.absent(getString(R.string.setting_driver_missing, folder))
         return driver.name
     }
 
@@ -731,21 +729,23 @@ class SettingsSectionActivity : AppCompatActivity() {
 
     /**
      * a port row's devices, each in the accent the row's value line is drawn in while it is connected,
-     * and in the body colour with (not connected) after it while it is not, as a binding row says it.
-     * the comma after a name goes with that name.
+     * and marked [SettingRow.Absent] with (not connected) after it while it is not, as a binding row
+     * says it. the comma after a name goes with that name.
+     *
+     * **marked rather than left to [SettingRow.Screen.chosen]**, here and on a binding or a motor row,
+     * because a mapping naming a device that is away is still a mapping: the line is still its answer,
+     * and the long press still clears it.
      */
     private fun devicesLine(devices: List<String>): CharSequence {
-        val absent = MaterialColors.getColor(binding.root, MaterialR.attr.colorOnSurfaceVariant)
         val line = SpannableStringBuilder()
         devices.forEachIndexed { at, device ->
-            val start = line.length
             val label = ControllerMapping.label(device)
-            val here = numbers.deviceIdOf(device) != DeviceNumbers.NO_DEVICE
-            line.append(if (here) label else getString(R.string.controller_not_connected, label))
-            if (at < devices.size - 1) line.append(", ")
-            if (!here) {
-                line.setSpan(
-                    ForegroundColorSpan(absent), start, line.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            val comma = if (at < devices.size - 1) ", " else ""
+            if (numbers.deviceIdOf(device) != DeviceNumbers.NO_DEVICE) {
+                line.append(label + comma)
+            } else {
+                line.append(
+                    SettingRow.absent(getString(R.string.controller_not_connected, label) + comma))
             }
         }
         return line
@@ -773,7 +773,8 @@ class SettingsSectionActivity : AppCompatActivity() {
 
     /**
      * one target's row: what drives it, said as the device and the input, and whether that device is
-     * here. a tap captures a new binding, and the long press clears it.
+     * here -- [SettingRow.Absent] when it is not, as on the Controls row. a tap captures a new
+     * binding, and the long press clears it.
      */
     private fun bindingRow(target: Int, title: Int, group: Int): SettingRow {
         val bound = mapping.binding(port, target)
@@ -783,7 +784,7 @@ class SettingsSectionActivity : AppCompatActivity() {
             val said = getString(R.string.controller_binding,
                 ControllerMapping.label(bound.device), ControllerMapping.inputLabel(bound))
             if (numbers.deviceIdOf(bound.device) == DeviceNumbers.NO_DEVICE) {
-                getString(R.string.controller_not_connected, said)
+                SettingRow.absent(getString(R.string.controller_not_connected, said))
             } else {
                 said
             }
@@ -821,7 +822,8 @@ class SettingsSectionActivity : AppCompatActivity() {
     }
 
     /**
-     * one of a port's two motors: which one a game's large or small rumble drives, or none.
+     * one of a port's two motors: which one a game's large or small rumble drives, or none -- marked
+     * [SettingRow.Absent] when it is not available right now, as a binding on a device that is away.
      *
      * [present] is every motor connected now, read once for the two rows.
      */
@@ -829,6 +831,13 @@ class SettingsSectionActivity : AppCompatActivity() {
         val motor = mapping.motor(port, row)
         val id = "motor-$row"
         val title = if (row == 0) R.string.controller_motor_large else R.string.controller_motor_small
+        // the list pickMotor opens says the same words unmarked: there it is one choice among the
+        // others, all in the list's own colour.
+        val value = when {
+            motor == null -> getString(R.string.controller_motor_none)
+            motor in present -> motorLabel(motor, true)
+            else -> SettingRow.absent(motorLabel(motor, false))
+        }
         return SettingRow.Screen(
             key = null,
             title = title,
@@ -837,8 +846,7 @@ class SettingsSectionActivity : AppCompatActivity() {
             } else {
                 R.string.controller_motor_small_summary
             },
-            value = motor?.let { motorLabel(it, it in present) }
-                ?: getString(R.string.controller_motor_none),
+            value = value,
             chosen = motor != null,
             enabled = mapping.unwritable == null,
             id = id,

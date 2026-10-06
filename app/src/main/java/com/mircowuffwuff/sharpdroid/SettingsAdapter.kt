@@ -2,6 +2,9 @@ package com.mircowuffwuff.sharpdroid
 
 import android.content.res.ColorStateList
 import android.graphics.drawable.GradientDrawable
+import android.text.SpannableString
+import android.text.Spanned
+import android.text.style.ForegroundColorSpan
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -334,7 +337,7 @@ class SettingsAdapter(
                     )
                 )
             }
-            binding.value.text = row.value
+            binding.value.text = drawn(row.value)
             // set on both branches rather than only the plain one, because a holder is recycled and
             // the colour of the row it was last bound to would otherwise stay on it.
             binding.value.setTextColor(
@@ -357,6 +360,25 @@ class SettingsAdapter(
                 }
             }
             useGlobal(binding.useGlobal, row.key, row)
+        }
+
+        /**
+         * [value] with each part marked [SettingRow.Absent] in the body colour, over the accent the
+         * line is drawn in. a value with no such part is handed over as it is, which is every row that
+         * names nothing gone.
+         */
+        private fun drawn(value: CharSequence): CharSequence {
+            if (value !is Spanned) return value
+            val marks = value.getSpans(0, value.length, SettingRow.Absent::class.java)
+            if (marks.isEmpty()) return value
+            val body = MaterialColors.getColor(binding.value, MaterialR.attr.colorOnSurfaceVariant)
+            val drawn = SpannableString(value)
+            for (mark in marks) {
+                drawn.setSpan(
+                    ForegroundColorSpan(body), value.getSpanStart(mark), value.getSpanEnd(mark),
+                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
+            return drawn
         }
     }
 
