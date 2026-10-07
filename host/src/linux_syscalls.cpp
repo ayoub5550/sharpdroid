@@ -151,6 +151,8 @@ enum GuestSyscall : uint64_t {
   SYS_x64_futex = 202,
   SYS_x64_sched_setaffinity = 203,
   SYS_x64_sched_getaffinity = 204,
+  SYS_x64_getgroups = 115,
+  SYS_x64_getcpu = 309,
   SYS_x64_select = 23,
   SYS_x64_epoll_wait = 232,
   SYS_x64_epoll_ctl = 233,
@@ -1104,6 +1106,8 @@ uint64_t LinuxSyscallHandler::Dispatch(FEXCore::Core::CpuStateFrame* Frame, Host
   case SYS_x64_getuid: return static_cast<uint64_t>(::getuid());
   case SYS_x64_geteuid: return static_cast<uint64_t>(::geteuid());
   case SYS_x64_getgid: return static_cast<uint64_t>(::getgid());
+  // gid_t is 32-bit on both, so the list is the same array.
+  case SYS_x64_getgroups: return FromHost(::getgroups(static_cast<int>(Arg0), reinterpret_cast<gid_t*>(Arg1)));
   case SYS_x64_getegid: return static_cast<uint64_t>(::getegid());
   case SYS_x64_sched_yield: return FromHost(::sched_yield());
   case SYS_x64_getrandom: return FromHost(::getrandom(reinterpret_cast<void*>(Arg0), Arg1, static_cast<unsigned int>(Arg2)));
@@ -1183,6 +1187,10 @@ uint64_t LinuxSyscallHandler::Dispatch(FEXCore::Core::CpuStateFrame* Frame, Host
     return FromHost(::sched_getparam(static_cast<pid_t>(Arg0), reinterpret_cast<struct sched_param*>(Arg1)));
   case SYS_x64_sched_getaffinity: return FromHost(::syscall(SYS_sched_getaffinity, Arg0, Arg1, Arg2));
   case SYS_x64_sched_setaffinity: return FromHost(::syscall(SYS_sched_setaffinity, Arg0, Arg1, Arg2));
+  // which core this thread is on. glibc's sched_getcpu() falls back to the syscall when rseq is
+  // refused (it is, above) and there is no x86-64 vDSO to ask, and .NET asks it at startup to decide
+  // whether per-core data is worth keeping. the third argument is unused by the kernel since 2.6.24.
+  case SYS_x64_getcpu: return FromHost(::syscall(SYS_getcpu, Arg0, Arg1, nullptr));
   // the SCHED_* policy numbers agree between the architectures, so the priority bounds do too.
   // .NET asks for these when it maps managed thread priorities onto the host's.
   case SYS_x64_sched_get_priority_max: return FromHost(::sched_get_priority_max(static_cast<int>(Arg0)));
