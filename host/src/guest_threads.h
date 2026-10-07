@@ -57,6 +57,12 @@ struct FaultReport {
   int SiCode;
   bool InJitCode;
   uint64_t GPR[16];
+  ///< the host return chain at the fault: LR, then the saved LRs of up to kHostFrames frame-pointer
+  ///< records. a host crash in a libc routine (memcpy, memset) names only that routine as its PC,
+  ///< which says nothing about who called it; these do. zero-terminated.
+  static constexpr int kHostFrames = 12;
+  uint64_t HostLR;
+  uint64_t HostFrames[kHostFrames];
 };
 
 // everything one guest thread owns. allocated by the host layer and pointed at from FEXCore's

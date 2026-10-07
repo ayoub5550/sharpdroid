@@ -542,6 +542,36 @@ static FPSimdRecord* FindMutableFPSimd(ucontext_t* Context) {
   return nullptr;
 }
 
+namespace {
+// the host return chain at a host-side fault, read in the handler because the frames it walks are
+// gone by the time the report is printed. bounded twice over -- by the frame count and by a window
+// above SP that a thread's own stack fits in -- and each record must sit above the last, so a
+// corrupt or omitted frame pointer ends the walk rather than sending it somewhere unmapped.
+void CaptureHostFrames(FaultReport& Fault, const ucontext_t* Context) {
+  Fault.HostLR = Context->uc_mcontext.regs[30];
+  const uint64_t SP = Context->uc_mcontext.sp;
+  const uint64_t Limit = SP + (16ull << 20);
+  uint64_t FP = Context->uc_mcontext.regs[29];
+  int Count = 0;
+  while (Count < FaultReport::kHostFrames && FP >= SP && FP < Limit && (FP & 0xF) == 0) {
+    const auto* Record = reinterpret_cast<const uint64_t*>(FP);
+    const uint64_t Next = Record[0];
+    const uint64_t Return = Record[1];
+    if (!Return) {
+      break;
+    }
+    Fault.HostFrames[Count++] = Return;
+    if (Next <= FP) {
+      break;
+    }
+    FP = Next;
+  }
+  if (Count < FaultReport::kHostFrames) {
+    Fault.HostFrames[Count] = 0;
+  }
+}
+} // namespace
+
 ///< how many compiles outgrew their scratch buffer and were restarted with more -- reported at exit.
 std::atomic<uint64_t> JITSpaceRestarts {0};
 
@@ -735,6 +765,9 @@ void GuestFaultHandler(int Signal, siginfo_t* Info, void* UContext) {
   T->Fault.HostPC = HostPC;
   T->Fault.FaultAddress = Info->si_addr;
   T->Fault.InJitCode = InJitCode;
+  if (!InJitCode) {
+    CaptureHostFrames(T->Fault, Context);
+  }
 
   if (InJitCode) {
     const siginfo_t* DeliverInfo = Info;
@@ -1459,10 +1492,10 @@ namespace {
 // line is the fallback, because FEX's own code buffers are anonymous mappings that no symbol
 // table describes. resolved here rather than in the handler -- this runs on an ordinary stack,
 // after the fact.
-void DescribeHostAddress(uint64_t Addr) {
+void DescribeHostAddress(uint64_t Addr, const char* What = "host PC") {
   Dl_info Info {};
   if (::dladdr(reinterpret_cast<void*>(Addr), &Info) && Info.dli_fname) {
-    std::printf("[host-layer]   host PC is in %s", Info.dli_fname);
+    std::printf("[host-layer]   %s is in %s", What, Info.dli_fname);
     if (Info.dli_sname) {
       std::printf(" %s+0x%llX", Info.dli_sname, static_cast<unsigned long long>(Addr - reinterpret_cast<uint64_t>(Info.dli_saddr)));
     }
@@ -1481,7 +1514,7 @@ void DescribeHostAddress(uint64_t Addr) {
   while (std::fgets(Line, sizeof(Line), Maps)) {
     unsigned long long Begin = 0, End = 0;
     if (std::sscanf(Line, "%llx-%llx", &Begin, &End) == 2 && Addr >= Begin && Addr < End) {
-      std::printf("[host-layer]   host PC is in mapping: %s", Line);
+      std::printf("[host-layer]   %s is in mapping: %s", What, Line);
       break;
     }
   }
@@ -1542,6 +1575,14 @@ void PrintFaultReport(const GuestThread& T) {
   std::printf("[host-layer]   in JIT code = %d, host PC = 0x%llX\n", T.Fault.InJitCode, static_cast<unsigned long long>(T.Fault.HostPC));
   if (!T.Fault.InJitCode) {
     DescribeHostAddress(T.Fault.HostPC);
+    if (T.Fault.HostLR) {
+      DescribeHostAddress(T.Fault.HostLR, "host LR");
+    }
+    for (int i = 0; i < FaultReport::kHostFrames && T.Fault.HostFrames[i]; ++i) {
+      char What[32];
+      std::snprintf(What, sizeof(What), "host frame #%d", i);
+      DescribeHostAddress(T.Fault.HostFrames[i], What);
+    }
     // guest state was never gathered, because a host crash has none to gather: the registers
     // below are zeroes from initialisation, not values read out of anywhere.
     std::printf("[host-layer]   (host-side crash -- the guest registers below are not populated)\n");
