@@ -109,6 +109,10 @@ def entry():
     parser.add_argument("--no-publish", action="store_true",
                         help="package the publish tree that is already there rather than building "
                              "one.")
+    parser.add_argument("--jit", action="store_true",
+                        help="publish IL only, compiled by the JIT at every launch, instead of "
+                             "ReadyToRun. the payload is smaller and boots several seconds slower "
+                             "under translation; there for comparing the two.")
     parser.add_argument("--from-archive", metavar="PATH", default=None,
                         help="a published linux-x64 tree as an archive or a directory, by path or "
                              "URL, instead of a fork checkout.")
@@ -149,6 +153,10 @@ def from_archive(toolchain, arguments):
     the same shape as an unpacked archive, and this is what gives one an identity without a fork
     checkout or a repackage.
     """
+    if arguments.jit:
+        # an archive is published already, compiled however its producer compiled it. accepting
+        # the flag would let a package claim a choice nobody made.
+        raise Refusal("--jit chooses how the fork is published, and an archive is already published")
     if not arguments.id:
         raise Refusal("--from-archive needs --id: there is no branch to take the build's id from")
     branch = arguments.id
@@ -254,7 +262,12 @@ def from_fork(toolchain, arguments):
     # valid: the payload is real and so is the identity. the commit is part of it, because a branch
     # name alone would not notice a rebuild after a commit on the same branch.
     stamp = publish / ".packaged-from"
-    identity = "{} {}".format(branch, commit)
+    # and how it was compiled, for the same reason: a JIT publish and a ReadyToRun one of the same
+    # commit are both valid payloads that behave very differently, and --no-publish must not let one
+    # be repackaged under the belief that it is the other. a stamp from before the mode was recorded
+    # is two fields, and every publish of that era was a JIT one.
+    mode = "jit" if arguments.jit else "readytorun"
+    identity = "{} {} {}".format(branch, commit, mode)
 
     if not arguments.no_publish:
         step("publishing {}".format(branch))
@@ -264,9 +277,25 @@ def from_fork(toolchain, arguments):
         environment = dict(os.environ)
         environment["DOTNET_ROOT"] = str(toolchain.dotnet_root)
         environment["PATH"] = str(toolchain.dotnet_root) + os.pathsep + environment.get("PATH", "")
-        run([toolchain.dotnet, "publish",
-             str(fork / "src" / "SharpEmu.CLI" / "SharpEmu.CLI.csproj"),
-             "-c", "Release", "-r", "linux-x64"], env=environment)
+        # **ReadyToRun by default.** the payload runs as guest code, so every method the JIT
+        # compiles at startup is compiled by translated x86-64 code -- the JIT itself runs under FEX.
+        # a SharpEmu boot JIT-compiles about 25,000 methods before the guest's entry point; ahead
+        # of time, about 500 are left. measured to "Calling guest entry" of a trivial guest, that is
+        # 5.4-5.7 s down to 2.8-3.0 s on a Snapdragon 8 Gen 3 phone under both FEX pins, and 7.0 s
+        # down to 3.3 s natively on x86-64.
+        # the native code is x86-64, which is exactly what the guest is, so nothing about the
+        # translation changes -- there is just much less of it to do. the JIT is still there for
+        # what R2R cannot precompile (generic instantiations over types from another assembly,
+        # dynamic methods), and tiered compilation still re-JITs hot methods, which is what keeps
+        # steady-state code quality where it was. single-file compression stays as the csproj
+        # sets it: on the same phone it costs about 0.45 s of decompression at launch (2.4-2.5 s
+        # without it) and keeps the payload, which ships inside the APK, at 87 MB rather than 197.
+        command = [toolchain.dotnet, "publish",
+                   str(fork / "src" / "SharpEmu.CLI" / "SharpEmu.CLI.csproj"),
+                   "-c", "Release", "-r", "linux-x64"]
+        if not arguments.jit:
+            command.append("-p:PublishReadyToRun=true")
+        run(command, env=environment)
         write_text(stamp, identity + "\n")
 
     if not (publish / "SharpEmu").exists():
@@ -276,11 +305,18 @@ def from_fork(toolchain, arguments):
         # refuse rather than warn. a warning on a package that then succeeds is a build somebody
         # keeps, and its metadata is the only place the mistake would ever show.
         was = stamp.read_text(encoding="utf-8").strip() if stamp.exists() else ""
+        if was and len(was.split()) == 2:
+            was += " jit"
         if not was:
             raise Refusal(
                 "the publish tree at {} has no record of what it was built from, so --no-publish "
                 "cannot confirm it is {}. drop --no-publish to publish it again".format(
                     publish, identity))
+        if was != identity and was.rsplit(" ", 1)[0] == identity.rsplit(" ", 1)[0]:
+            raise Refusal(
+                "the publish tree at {} is a {} publish of this commit and this would package it "
+                "as {}. {} --jit to match it, or drop --no-publish to publish again".format(
+                    publish, was.rsplit(" ", 1)[1], mode, "drop" if arguments.jit else "pass"))
         if was != identity:
             raise Refusal(
                 "the publish tree at {} was built from '{}' and this would label it '{}'. drop "
