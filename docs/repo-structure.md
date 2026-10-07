@@ -41,13 +41,14 @@ a repository boundary there would buy an independent version number nobody would
 │   └── scripts.md            every script, and the arguments worth knowing
 │
 ├── external/                 three pinned submodules
-│   ├── FEX/                  FEXCore, and sixteen submodules of its own. never modified
+│   ├── FEX/                  FEXCore, and sixteen submodules of its own. the checkout is never modified
 │   ├── libadrenotools/       never modified
 │   └── sharpemu/             the fork, pinned at the commit a bundled build is cut from. a pin
 │                             rather than a workspace -- see below
 │
 ├── host/                     the host layer — one cmake project
 │   ├── CMakeLists.txt        assembles FEXCore for bionic, then builds the host layer twice
+│   ├── fex-patches/          FEX fixes applied to build-tree copies, never to the checkout
 │   ├── include/              bionic-compat.h
 │   ├── regression.sh         the on-device regression modes
 │   ├── src/                  ELF loader, syscall dispatch, signal delegation, VMA/SMC tracking,
@@ -107,7 +108,9 @@ three **git submodules under `external/`**, each pinned to an exact commit:
 | [libadrenotools](https://github.com/bylaws/libadrenotools) | `8fae8ce` | BSD-2-Clause | custom GPU driver loading |
 | [the SharpEmu fork](https://github.com/mircowuffwuff/sharpemu) | the `android` commit a bundled build is cut from | GPL-2.0-or-later | the emulator itself |
 
-**FEX and libadrenotools are never modified**, and their submodules enforce that for free: a patched FEX shows dirty in `git status` the moment it happens, where a checkout beside the tree would go unnoticed. FEX bans AI-generated contributions, so a patch of ours could never go upstream and would become a permanent private delta against a fast-moving project.
+**the FEX and libadrenotools checkouts are never modified**, and their submodules enforce that for free: a patched checkout shows dirty in `git status` the moment it happens, where a checkout beside the tree would go unnoticed.
+
+**a FEX bug that cannot wait for upstream is fixed by a patch in `host/fex-patches/`, not in the checkout.** at configure time `host/fex-patches/fex-patches.cmake` copies each file a patch touches into `build/host/fex-patched/`, applies the patch to the copy, and points the FEXCore targets at the copy instead of the original, so the submodule stays at its tag and `git status` stays clean. every patch also changes the build's identity: `+sd<n>` is appended to the FEX version string and the patch texts are folded into the hash FEX keys its disk cache with, so code compiled by a patched core is never reused by an unpatched one or the other way round. **a patch that no longer applies fails the configure** with a message saying to delete or refresh it — which is exactly what should happen the day a FEX bump picks up the fix. FEX bans AI-generated contributions, so these stay ours: keep each one minimal, with a header saying what it fixes and how it was verified.
 
 **`--recurse-submodules` is not optional**: FEX carries sixteen submodules of its own — vixl, fmt, xxhash, range-v3, unordered_dense and the rest — and `host/CMakeLists.txt` fails to configure with a message about them if they are absent. a full recursive clone is around 840 MB, of which the fork is about 21 MB.
 

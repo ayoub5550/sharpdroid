@@ -7,8 +7,8 @@
 # dependency graph ourselves and add FEXCore directly.
 #
 # doing it this way keeps every line of our build glue in our tree and leaves the FEX
-# checkout pristine -- which matters, because FEX bans AI-generated contributions, so any
-# patch we made to it could never go upstream and would be a permanent private delta.
+# checkout pristine. the few FEX fixes this repository cannot wait for are carried as patches in
+# host/fex-patches/ and applied to copies in the build tree, never to the checkout -- see there.
 
 cmake_minimum_required(VERSION 3.22)
 project(fexcore-android CXX C ASM)
@@ -126,6 +126,24 @@ if (GIT_FOUND)
     ERROR_QUIET
     OUTPUT_STRIP_TRAILING_WHITESPACE)
 endif()
+
+# the patches this repository carries are part of what was built, so they are part of its name. the
+# describe string gains `+sd<count>`, and the hash becomes a digest of the commit and every patch's text:
+# that hash is what keys FEXCore's disk cache, and code compiled by one patch set must not be read back
+# by another as though it were the same FEX.
+include("${CMAKE_CURRENT_SOURCE_DIR}/fex-patches/fex-patches.cmake")
+fex_patches_stage()
+if (FEX_PATCHES)
+  list(LENGTH FEX_PATCHES FEX_PATCH_COUNT)
+  set(GIT_DESCRIBE_STRING "${GIT_DESCRIBE_STRING}+sd${FEX_PATCH_COUNT}")
+  set(FEX_IDENTITY "${GIT_HASH}")
+  foreach(patch IN LISTS FEX_PATCHES)
+    file(READ "${patch}" text)
+    string(APPEND FEX_IDENTITY "${text}")
+  endforeach()
+  string(SHA1 GIT_HASH "${FEX_IDENTITY}")
+endif()
+
 string(REGEX REPLACE "(..|.$)" "0x\\1, " GIT_HASH_ARRAY "${GIT_HASH}")
 message(STATUS "FEX version: ${GIT_DESCRIBE_STRING}")
 
@@ -160,6 +178,7 @@ add_subdirectory("${FEX_ROOT}/External/cephes"                 External/cephes)
 add_subdirectory("${FEX_ROOT}/FEXHeaderUtils"                  FEXHeaderUtils)
 add_subdirectory("${FEX_ROOT}/CodeEmitter"                     CodeEmitter)
 add_subdirectory("${FEX_ROOT}/FEXCore"                         FEXCore)
+fex_patches_redirect()
 
 # --- what we actually want out of the above --------------------------------------------
 #

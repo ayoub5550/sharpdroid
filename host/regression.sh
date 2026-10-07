@@ -128,11 +128,11 @@ run_fails aaudio-off "aaudio played without the thunk enabled" --libs ./guest-li
 # there is nothing to fall back to. `none` is expected to *fail*, and is checked for failing:
 # it is what says the smc guest is testing something rather than passing by accident.
 #
-# under FEX-2609 `smc-full` is expected to run out of time at the guest's test 4, and that is FEX's
-# bug rather than ours: the jump into a non-executable page decodes to a zero-length instruction, the
-# full-SMC guard over it checksums no bytes but compares a scratch register that was never written,
-# sees "changed", invalidates and recompiles the same block forever. docs/host-layer.md has the
-# one-line fix. it is left failing here, not skipped, so the day a FEX bump fixes it this says so.
+# `smc-full` is also the test for host/fex-patches/0001: on an unpatched FEX-2609 the jump into a
+# non-executable page decodes to a zero-length instruction, the full-SMC guard over it checksums no
+# bytes but compares a scratch register that was never written, sees "changed", and recompiles the
+# same block forever -- so this mode running out of time means the patch did not make it into the
+# build. docs/host-layer.md has the details.
 run smc-full --smc full ./smc
 run_fails smc-none "smc passed without SMC detection -- the test is not testing anything" --smc none ./smc
 
