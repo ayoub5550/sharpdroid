@@ -1193,7 +1193,9 @@ def fex_version():
 
     **the dirty marker is the one this repository should never see.** FEX is a pinned submodule that
     is never modified, so a suffix here is not a stale working tree -- it is that rule having been
-    broken, and the About screen is a reasonable place for it to surface.
+    broken, and the About screen is a reasonable place for it to surface. **`+sd<n>` is not that**: it
+    is the count of fixes carried in `host/fex-patches/`, applied to build-tree copies, and it is on the
+    About screen so that a bug report against this FEX says which FEX it really was.
 
     empty when the header is missing or names no version, for the reason `repository_commit` is: not
     knowing is a state the screen is written for, and a placeholder is a string somebody would try to
