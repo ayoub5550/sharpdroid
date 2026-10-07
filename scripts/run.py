@@ -107,6 +107,11 @@ def entry():
                              "registers and is what a launch does when nothing is said; minimal is "
                              "the conservative set, and is here so the probe has an arm to be "
                              "measured against without a second APK.")
+    parser.add_argument("--code-cache", choices=("on", "off"), default=None,
+                        help="whether FEXCore keeps translated code between runs, in a directory per "
+                             "build under the app's cache. on is what a launch does when nothing is "
+                             "said; off is a cold start, which is what a boot measurement comparable "
+                             "with figures taken before the cache existed wants.")
     parser.add_argument("--profile", action="store_true",
                         help="the vulkan profile. every 300 frames it prints where a frame went -- "
                              "how much of it was spent inside vulkan and how much outside, which is "
@@ -155,7 +160,8 @@ def entry():
             ("--log-tids", arguments.log_tids), ("--audio-watchdog", arguments.audio_watchdog),
             ("--smc", arguments.smc), ("--fex-preset", arguments.fex_preset),
             ("--fex", arguments.fex), ("--profile", arguments.profile),
-            ("--host-features", arguments.host_features), ("--extras", arguments.extras)) if given]
+            ("--host-features", arguments.host_features), ("--code-cache", arguments.code_cache),
+            ("--extras", arguments.extras)) if given]
         if guest_only:
             raise Refusal(
                 "no --game, so no guest runs and {} would have no effect. pass --game existing to "
@@ -293,6 +299,8 @@ def launch(attached, package, activity, runs_guest, game, build_path, driver, ar
         say("  knobs   {}".format(arguments.fex))
     if arguments.host_features:
         say("  cpu     {}".format(arguments.host_features))
+    if arguments.code_cache:
+        say("  cache   {}".format(arguments.code_cache))
     if arguments.extras:
         say("  extras  {}".format(arguments.extras))
 
@@ -319,6 +327,9 @@ def launch(attached, package, activity, runs_guest, game, build_path, driver, ar
         # `probe` explicitly still has to travel, or it could not override a store that is off.
         if arguments.host_features:
             extras["hostprobe"] = arguments.host_features == "probe"
+        # on by default as well, and sent either way it is named for --host-features' reason.
+        if arguments.code_cache:
+            extras["codecache"] = arguments.code_cache == "on"
         if arguments.turbo:
             extras["turbo"] = True
         if arguments.log_tids:

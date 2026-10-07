@@ -449,6 +449,7 @@ class SettingsAdapter(
             Settings.KEY_CONTROLLER_VIBRATION -> settings.controllerVibration ?: default
             Settings.KEY_DISK_SHADER_CACHE -> settings.diskShaderCache ?: default
             Settings.KEY_HOST_FEATURE_PROBE -> settings.hostFeatureProbe ?: default
+            Settings.KEY_CODE_CACHE -> settings.codeCache ?: default
             else -> default
         }
 
@@ -470,6 +471,7 @@ class SettingsAdapter(
             Settings.KEY_CONTROLLER_VIBRATION -> settings.controllerVibration = value
             Settings.KEY_DISK_SHADER_CACHE -> settings.diskShaderCache = value
             Settings.KEY_HOST_FEATURE_PROBE -> settings.hostFeatureProbe = value
+            Settings.KEY_CODE_CACHE -> settings.codeCache = value
             else -> Unit
         }
     }

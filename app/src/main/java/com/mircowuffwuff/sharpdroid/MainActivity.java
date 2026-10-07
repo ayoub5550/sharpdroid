@@ -218,6 +218,12 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     private boolean hostFeatureProbe;
 
     /**
+     * whether FEXCore keeps what it translates between runs, in this build's own directory under
+     * {@link CodeCache}. on unless a row or {@code --ez codecache false} says otherwise.
+     */
+    private boolean codeCache;
+
+    /**
      * extra FEXCore options for one run, appended after whatever the preset contributes.
      *
      * <p><b>an instrument, and absent unless a launch names it.</b> the preset ladder is a fixed
@@ -542,6 +548,14 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         } else {
             hostFeatureProbe = !Boolean.FALSE.equals(settings.getHostFeatureProbe());
         }
+        // --ez codecache false, hasExtra for the reason --ez hostprobe is. on is the default here and
+        // it does say something on the command line -- the cache and where it lives -- so a launch
+        // measuring a cold start has this to turn it off with, and run.py's --code-cache off sends it.
+        if (getIntent().hasExtra("codecache")) {
+            codeCache = getIntent().getBooleanExtra("codecache", true);
+        } else {
+            codeCache = !Boolean.FALSE.equals(settings.getCodeCache());
+        }
         String fex = getIntent().getStringExtra("fex");
         if (fex != null && !fex.isEmpty()) {
             fexOptions = fex.split(",");
@@ -864,6 +878,39 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         root.addView(overlay.view(), new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         return root;
+    }
+
+    /**
+     * {@code --fex DiskCache=1} and the directory this payload keeps its translations in, with the
+     * cache settled under its limit first -- see {@link CodeCache}.
+     *
+     * <p><b>a cache that cannot be set up is a launch without one</b>, never a refused launch: what
+     * it buys is time, and a run that does not get it is the run every figure before it was taken on.
+     */
+    private List<String> codeCacheArguments(File payload) {
+        List<String> args = new ArrayList<>();
+        try {
+            long installedAt = getPackageManager().getPackageInfo(getPackageName(), 0).lastUpdateTime;
+            File directory = CodeCache.directoryFor(getCacheDir(), installedAt, payload);
+            long removed = CodeCache.prepare(getCacheDir(), directory);
+            if (removed > 0) {
+                AppLog.i(TAG, "[app] code cache: removed " + Formatter.formatShortFileSize(this, removed)
+                        + " to stay under " + Formatter.formatShortFileSize(this, CodeCache.LIMIT_BYTES));
+            }
+            if (!directory.isDirectory()) {
+                AppLog.e(TAG, "[app] code cache: could not create " + directory + ", running without");
+                return args;
+            }
+            args.add("--fex");
+            args.add("DiskCache=1");
+            // the trailing separator is FEX's: it appends file names to this as it is.
+            args.add("--fex");
+            args.add("DiskCachePath=" + directory.getAbsolutePath() + "/");
+        } catch (Exception e) {
+            AppLog.e(TAG, "[app] code cache: " + e + ", running without");
+            args.clear();
+        }
+        return args;
     }
 
     /**
@@ -1508,6 +1555,12 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
             // after both: the host layer applies these in order and keeps the last assignment to a
             // name, so a knob emitted after a rung replaces what the rung said about it.
             args.addAll(FexPreset.overrideArguments(fexOverrides));
+            // **the code cache, inside the configuration rather than beside it**, so a launch naming
+            // none of it -- the measurement vector -- names no cache either and stays a cold start.
+            // before --es fex, so `--es fex DiskCache=0` still turns it off for one run.
+            if (codeCache) {
+                args.addAll(codeCacheArguments(payload));
+            }
         }
         // after the preset and after the rows, so a launch measuring one knob overrides both the
         // rung it is measured against and anything stored, rather than fighting either: the host

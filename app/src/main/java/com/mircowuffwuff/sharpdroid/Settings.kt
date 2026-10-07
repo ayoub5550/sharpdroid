@@ -192,6 +192,7 @@ class Settings private constructor(
         }
         // compared against on rather than counted as set, for the reason the loading estimate is.
         if (hostFeatureProbe == false) count++
+        if (codeCache == false) count++
         if (renderScale?.let { it != RENDER_SCALES[0] } == true) count++
         if (diskShaderCache == true) count++
         // both on by default, so compared against on for the reason the loading estimate is.
@@ -567,6 +568,30 @@ class Settings private constructor(
         set(value) = prefs.edit().putBoolean(KEY_HOST_FEATURE_PROBE, value!!).apply()
 
     /**
+     * whether FEXCore keeps the code it translates between runs -- see [CodeCache].
+     *
+     * **on is the default, and that is a measurement rather than a preference.** a warm cache took a
+     * boot on a Snapdragon 8 Gen 3 from 2.4-2.5 s to 1.50-1.56 s, and the run that wrote it was no
+     * slower than one without. what kept it opt-in was that nothing bounded it, and [CodeCache] is the
+     * bound: a directory per build, and a limit across all of them.
+     *
+     * **not a preset rung, for [hostFeatureProbe]'s reason.** it changes how long a translation
+     * takes to arrive and never what the translation is -- FEX keys every entry by its own
+     * configuration as well as the guest's bytes -- so a rung that turned it off would be slower for
+     * no fidelity.
+     *
+     * it is a launch argument: on travels as `--fex DiskCache=1` and the directory, off says nothing,
+     * and a launch naming no JIT configuration at all (`--es fexpreset none`) says nothing either way.
+     */
+    var codeCache: Boolean?
+        get() = if (prefs.contains(KEY_CODE_CACHE)) {
+            prefs.getBoolean(KEY_CODE_CACHE, true)
+        } else {
+            fallback?.codeCache
+        }
+        set(value) = prefs.edit().putBoolean(KEY_CODE_CACHE, value!!).apply()
+
+    /**
      * the guest environment these settings contribute, in the order it should be applied.
      *
      * **only what was actually chosen.** an untouched row puts nothing in the map, so the guest's
@@ -614,6 +639,7 @@ class Settings private constructor(
         @JvmStatic
         fun fexKnobKey(option: String) = KEY_FEX_KNOB_PREFIX + option
         const val KEY_HOST_FEATURE_PROBE = "host_feature_probe"
+        const val KEY_CODE_CACHE = "code_cache"
         const val KEY_RENDER_SCALE = "render_scale"
         const val KEY_DRIVER = "driver"
         const val KEY_DISK_SHADER_CACHE = "disk_shader_cache"

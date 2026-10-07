@@ -227,6 +227,8 @@
 
     <string name="setting_host_feature_probe">Probe host instructions</string>
     <string name="setting_host_feature_probe_summary">Tell the JIT which instructions this device\'s processor supports. Translated code takes shorter routes and games load faster.</string>
+    <string name="setting_code_cache">Keep translated code</string>
+    <string name="setting_code_cache_summary">Save the code the JIT translates between sessions, so a game you have played before starts faster and stutters less. Uses up to 512 MB, which Android may reclaim when storage runs low.</string>
 
     <!-- **the whole of it leads and the parts follow.** the first card is what most people came to
          move, so it says its own total and carries the buttons for it; the cards under it are for
