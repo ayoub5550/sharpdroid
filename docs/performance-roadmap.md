@@ -1,0 +1,83 @@
+# performance roadmap
+
+where the speed of a PS5 game on a phone is lost, what has been measured, and the decisions ranked by what they buy for what they cost. it was written on 2026-10-07 from the repository as it stood after the R2R / FEX-2609 / uncompressed-payload work, from public sources on the translators and drivers involved, and from the VM loop in [`vm.md`](vm.md).
+
+**[measured]** means a number from a device or from the VM loop, **[source]** means a cited public source, and **[estimate]** means an inference that nothing here has measured yet. an estimate is a reason to measure, not a result.
+
+## first, the ceiling
+
+**a phone is not a PS5, and no emulator closes that gap.** the honest numbers, before any decision below:
+
+| | PS5 | a 2025–26 flagship phone |
+| --- | --- | --- |
+| GPU, FP32 | 10.28 TFLOPS, RDNA2, 36 CU at 2.23 GHz [source] | Adreno 830: about 1.8–3.7 TFLOPS, sources disagree [source] |
+| memory bandwidth | 448 GB/s GDDR6 | about 77–85 GB/s LPDDR5X [estimate] |
+| CPU | 8 Zen 2 cores, 16 threads, up to 3.5 GHz | Oryon / Cortex-X4 class: *native* single-thread is faster than Zen 2 [source] |
+| CPU under translation | — | roughly 40–70 % of native for integer code, worse for AVX2 on 128-bit NEON [estimate] |
+
+so the GPU is a third to a fifth of the console's with a fifth of its bandwidth, and the CPU is a few Zen 2 cores at best once x86-64 is translated. **GTA 6 is out of reach**: it ships on 2026-11-19 on PS5 and Xbox Series only [source], it is the heaviest console title of its generation, and SharpEmu itself is an accuracy-first emulator whose tested titles are Demon's Souls (boot imagery), Dreaming Sarah, Void Terrarium and Dead Cells. the realistic target for everything below is **2D and light 3D PS5 titles, booting fast and holding a steady frame**.
+
+## where the time goes today
+
+- **boot** [measured, Xiaomi 14 / 8 Gen 3, FEX-2609]: an R2R payload reaches *Calling guest entry* in 2.4–2.5 s cold and 1.50–1.56 s with a warm DiskCache; an IL-only payload takes 5.5 s (4.3–4.6 s warm); single-file compression costs about 0.45 s.
+- **the whole emulator runs translated.** SharpEmu is a linux-x64 .NET program: CoreCLR, its JIT and GC, the HLE, the Gen5 → SPIR-V shader translator and the Vulkan presenter all run through FEXCore, not only the PS5 code. every method CoreCLR jits is guest code FEXCore then translates again, and every one of those writes is SMC the tracker has to see.
+- **memory ordering.** x86 is TSO, arm64 is not, and FEXCore pays for TSO on every load and store it cannot prove private. the Intermediate rung (TSO on, vector and memcpy TSO off, unaligned half-barrier on) is the configuration FEX itself recommends on LRCPC/LRCPC2 hardware [source].
+- **AVX2.** PS5 code is Zen 2 code, so AVX2 is everywhere. FEXCore's fast AVX path needs 256-bit SVE, which no phone has; on a phone every 256-bit op is two 128-bit NEON ops [source, estimate].
+
+## the decisions, ranked
+
+| # | decision | buys | effort | risk | where |
+| --- | --- | --- | --- | --- | --- |
+| 1 | **prewarm the FEX DiskCache for a payload** at install or first idle, keyed by payload hash — Rosetta 2's AOT idea | cold boot → about warm (2.4 → ~1.5 s on a phone; warm 0.88× in the VM) [measured] | M | low | `scripts/package-build.py`, the launcher, `docs/app.md` |
+| 2 | **NativeAOT linux-x64 payload** in the fork: replace `ModuleManager.cs`'s `Assembly.Load` with a static registry | no CoreCLR JIT under translation, far less SMC, steadier pacing | M | medium (trim warnings) | fork `SharpEmu.HLE/ModuleManager.cs`, csproj |
+| 3 | until #2: **.NET runtime knobs** — composite R2R with the framework, `TieredPGO=0`, larger gen0, fewer rejits | R2R ~2× [measured]; PGO and gen0 nothing measurable at boot [measured, VM]; composite R2R and the HLE warm-up untested | S | low | build env in `docs/build-format.md`, publish args |
+| 4 | **track FEX monthly** (2610+), rebase `host/fex-patches/`, re-measure the ladder each bump | CPU 5–15 % [estimate] | S per month | low–medium | `external/FEX`, `toolchain.json` |
+| 5 | **ADPF PerformanceHint** around present (`vkQueuePresentKHR` is already thunked) plus thermal headroom | frame pacing, sustained clocks | S–M | low | `host/src/vulkan_thunk.cpp`, `entry_jni.cpp` |
+| 6 | **host-side thread placement**: guest main/render threads on prime cores, FEX compile and CoreCLR background threads on mid cores | frame pacing | S | low | `host/src/guest_threads.cpp`, `fex_threads.cpp` |
+| 7 | **per-game memory-order profiles** with a measured compatibility list (Box64's STRONGMEM idea, on the per-game rung the app already has) | CPU 10–30 % on eligible titles [estimate] | S | medium (silent corruption) | per-game settings, `docs/app.md` |
+| 8 | **verify LRCPC / LRCPC2 / LRCPC3 / LSE2** detection on 8 Gen 2 / 3 / Elite and that TSO loads use LDAPR | the TSO cost | S | low | `host/src/host_features.cpp` |
+| 9 | **key the pipeline cache by `pipelineCacheUUID` and driver** (system driver and Turnip caches are not interchangeable) | shader stutter | S | low | the launcher's `SHARPEMU_VK_PIPELINE_CACHE_PATH` |
+| 10 | **cache translated SPIR-V**, compile pipelines asynchronously (GPL / shader object where Turnip has them) | stutter, translated CPU time | M | low–medium | fork `SharpEmu.ShaderCompiler`, presenter |
+| 11 | **render scale plus FSR1** in the presenter, driven by #5's thermal headroom | GPU 1.5–2.5× effective [estimate] | M | low | fork presenter, or a host-side blit |
+| 12 | **thunk glibc's memcpy / memset / str\*** to bionic's NEON versions | CPU, a few % [estimate] | M | low | `host/thunks`, `scripts/gen-thunks.py` |
+| 13 | **`MADV_HUGEPAGE`** on FEX code buffers and large guest mappings where the kernel allows | iTLB, a few % [estimate] | S | low | `vma_tracker.cpp`, mmap paths |
+| 14 | **ship current Turnip A7xx / A8xx** and pick a default driver per GPU | GPU, compatibility | S | medium | `scripts/build-adrenotools.py` |
+| 15 | **research spike: SharpEmu native linux-arm64**, with a FEXCore-backed `INativeCpuBackend` (Arm64EC's model: the emulator native, only PS5 code translated) | every axis; the largest win available, 2×+ on emulator-side work [estimate] | months | high (diverges from upstream) | fork `SharpEmu.Core/Cpu/Native/*`, `HostPlatform.cs` |
+| 16 | frame generation, after pacing is solved | perceived fps | L | medium | presenter |
+| 17 | 256-bit SVE2 phone cores: watch, nothing to do yet | AVX2 | — | — | — |
+
+### why this order
+
+**#1–#3 remove work, so they are safe and the VM can see them.** they are boot and hitch wins with no correctness risk, and every one is a change to how the payload is built or launched rather than to the JIT.
+
+**#2 and #15 are the two real step changes**, and they are the same idea at two sizes. today the emulator's own .NET code is the majority of what FEXCore translates at boot. NativeAOT removes the JIT from that picture; a native arm64 SharpEmu removes translation of the emulator altogether and leaves FEXCore only the PS5 code — which is what Arm64EC does on windows. both live in the fork. the seams are already there: `SharpEmu.HLE/Host/HostPlatform.cs` is the one place that refuses a non-x64 process, and `SharpEmu.Core/Cpu/Native/INativeCpuBackend.cs` is the interface a FEXCore backend would implement.
+
+**#5, #6, #9–#11 are the frame, not the boot**, and none of them can be measured anywhere but a phone with a game running.
+
+**#7 and #8 are the CPU's biggest dial and its biggest risk.** a title that is single-threaded where it matters can run with TSO off and gain a lot; one that is not corrupts memory silently. that is why it is a per-game, measured decision and never a default.
+
+## what the VM can and cannot decide
+
+the VM loop ([`vm.md`](vm.md)) runs the host layer under qemu-system-aarch64 with android's bionic. it measures **ratios between configurations that change how much work is done** — #1, #2, #3, #4, #12 — and nothing about the speed of an individual instruction, so #7, #8 and #13 need a device. every graphics and audio item needs a device.
+
+## measured so far
+
+results land here as they are produced, with where and how.
+
+- **VM, regression set** (16 vCPUs, `-cpu max,sve=off`): every mode that does not need a GPU or an audio device passes, 15 of 19; `vulkan`, `vkrender`, `vkswap` and `aaudio` fail as they must with no hardware behind them.
+
+- **VM, boot bench** (`scripts/vm-boot-bench.sh`, 16 vCPUs, `-cpu max,sve=off`, payload `android-0.0.3-release.4`, 3 runs a row, the median against the baseline's). the baseline's own three runs spread 89.7–106.4 s, so **anything within about ±10 % is noise**:
+
+  | row | median | vs baseline |
+  | --- | --- | --- |
+  | baseline (R2R, the launcher's env) | 91.6 s | 1.00 |
+  | `DOTNET_TieredPGO=0` | 97.6 s | 1.07 — noise, not a win |
+  | `DOTNET_GCgen0size=64 MiB` | 103.0 s | 1.12 — noise or slightly worse |
+  | both | 96.1 s | 1.05 — noise |
+  | `DOTNET_ReadyToRun=0` (IL only) | 179.0 s | **1.95** |
+  | FEX DiskCache on the run share, cold then warm | 122.4 s, then 124.5 / 118.5 s | 1.34, then 1.33 |
+  | FEX DiskCache in RAM (second session, its own baseline 94.0 s), cold then warm | 103.6 s, then 83.8 / 81.9 s | 1.10 cold, **0.88 warm** |
+
+  what it decides: **R2R is the one .NET knob that matters** — the VM's 1.95× is the device's 2.3× (5.5 s → 2.4 s) seen through TCG, which is the first check that the VM points the right way. **#3's PGO and gen0 knobs buy nothing measurable at boot**; they stay out of the launcher until a device frame-time run says otherwise. the first DiskCache row measures 9p, not the cache: the cache sat on the run share, which is uncached 9p under TCG, so every lookup was a round trip to the host (`vm.md`). in RAM the cache does what it does on a phone — a cold run pays about 10 % to fill it and every warm run is about 12 % faster, the device's 0.62 seen through TCG — which is the case for **#1, prewarming it so that no user ever pays the cold boot**.
+- **24,076 methods are jitted at startup with R2R on.** the runtime log says *Warmed 3724 type initializers + JIT-compiled 24076 methods across 11 HLE assemblies, plus 3059 framework type initializers*: SharpEmu's own HLE warm-up forces a JIT of methods R2R already compiled or could have. under FEXCore each of those is jitted code that is then translated again and SMC-tracked (7,517 code invalidations, 3,031 SMC write faults in one boot). it makes **#2 (NativeAOT) larger than estimated, and gives a cheaper first step**: find why R2R code is being rejected or bypassed for those methods (generic instantiations over HLE types, `RuntimeHelpers.PrepareMethod` in the warm-up, or a version bubble the composite build does not cover) and make the warm-up R2R-aware.
+- **two x86-64 syscalls the host layer did not pass through**: `getcpu` (309, three calls per boot, from glibc's `sched_getcpu()` because rseq is refused) and `getgroups` (115). both now pass through, the regression set is still 15 of 19 with them, and a payload boot is down to one unhandled syscall, `get_mempolicy` (239), which .NET's NUMA probe asks and reads ENOSYS as *no NUMA* — the right answer on a phone, so it stays unhandled.

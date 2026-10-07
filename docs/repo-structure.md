@@ -38,7 +38,9 @@ a repository boundary there would buy an independent version number nobody would
 │   ├── pad.md                the gamepad bridge, its formats, the controller mapping, rumble
 │   ├── app.md                the screens, the surface, the launch extras, the settings and merge
 │   ├── frontends.md          starting a game from another app: the component, the two forms
-│   └── scripts.md            every script, and the arguments worth knowing
+│   ├── scripts.md            every script, and the arguments worth knowing
+│   ├── vm.md                 the arm64 android VM on an x86-64 box: how it is built, run, and what it can measure
+│   └── performance-roadmap.md where the speed goes, what is measured, the decisions ranked
 │
 ├── external/                 three pinned submodules
 │   ├── FEX/                  FEXCore, and sixteen submodules of its own. the checkout is never modified
@@ -81,6 +83,8 @@ a repository boundary there would buy an independent version number nobody would
 │   ├── package-build.py      a fork publish, or an archive, into a build with an identity
 │   ├── stage.py              a build, a game, the guest libraries, a driver, the shell binary
 │   ├── regression.py         stage, run the 19 host-layer modes, report
+│   ├── vm.py                 the same, and more, in a qemu-system-aarch64 VM. no phone needed
+│   ├── vm-boot-bench.sh      the payload's boot timed inside that VM, one config per row
 │   └── sharpdroid/           the eight modules they share: shell, paths, toolchain, native,
 │                             vocabulary, device, builds, resolve
 ├── toolchain.json            every required toolchain version, and where to get it

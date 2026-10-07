@@ -151,8 +151,10 @@ besides this hand written readme, a bunch of more in-depth documents on the sepa
 - [guest files](docs/guest-files.md)
 - [host layer](docs/host-layer.md)
 - [pad](docs/pad.md)
+- [performance roadmap](docs/performance-roadmap.md)
 - [repo structure](docs/repo-structure.md)
 - [scripts](docs/scripts.md)
+- [the VM loop](docs/vm.md)
 - [vulkan](docs/vulkan.md)
 
 ## how to contribute
