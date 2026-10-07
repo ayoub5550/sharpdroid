@@ -285,11 +285,11 @@ thanks to [FEX](https://github.com/FEX-Emu/FEX) for providing their frontend as 
 
 thanks to [libadrenotools](https://github.com/bylaws/libadrenotools) for making it possible to inject custom vulkan drivers with relative ease.
 
-thanks to [Eden](https://eden-emu.dev/) for providing an elegant user interface design reference.
+thanks to [Eden](https://eden-emu.dev/) for providing an elegant user interface design reference, a functional pausing reference, and a solid background survival service reference.
 
 thanks to [GameNative](https://github.com/utkarshdalal/GameNative) for providing a functional x86 on arm64 android reference.
 
-thanks to [Dolphin](https://github.com/dolphin-emu/dolphin) for providing a functional SAF file loading reference.
+thanks to [Dolphin](https://github.com/dolphin-emu/dolphin) for providing a functional SAF file loading reference and a battle proven manual controller mapping reference.
 
 thanks to Ömer for donating 3 weeks' worth of claude code pro trials, and for composing his amazing handheld themed [sharpdroid render](https://github.com/user-attachments/assets/6bf16388-f0f9-4a91-aa36-2c10acdd1d8d).
 
