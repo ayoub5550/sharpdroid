@@ -40,6 +40,8 @@
 #include <FEXCore/Core/CoreState.h>
 #include <FEXCore/HLE/SyscallHandler.h>
 
+#include "syscall_args.h"
+
 #include <cstddef>
 #include <cstdint>
 
@@ -195,7 +197,7 @@ struct Controls {
 void SetControls(uint32_t Port, const Controls& Pad);
 
 // the dispatch entry, called from LinuxSyscallHandler::Dispatch for any magic number.
-uint64_t Handle(FEXCore::Core::CpuStateFrame* Frame, FEXCore::HLE::SyscallArguments* Args);
+uint64_t Handle(FEXCore::Core::CpuStateFrame* Frame, HostLayer::SyscallArguments* Args);
 
 // counters, for the run summary. **Reads is the liveness counter and it is the point of the set**: a
 // pad that is never touched and a bridge the guest never asks look identical in every other way, and

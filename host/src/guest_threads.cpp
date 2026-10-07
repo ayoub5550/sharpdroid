@@ -826,11 +826,15 @@ GuestThread* CreateInitial(uint64_t RIP, uint64_t RSP) {
   T->Initial = true;
   T->TID = static_cast<int32_t>(::gettid());
 
-  T->Thread = CTX->CreateThread(RIP, RSP);
+  // FEX-2609 dropped CreateThread's RIP and RSP parameters: a thread starts from the state it is
+  // given, or a zeroed one, and the entry point and stack are set in it afterwards.
+  T->Thread = CTX->CreateThread();
   if (!T->Thread) {
     delete T;
     return nullptr;
   }
+  T->Thread->CurrentFrame->State.rip = RIP;
+  T->Thread->CurrentFrame->State.gregs[FEXCore::X86State::REG_RSP] = RSP;
   T->Thread->FrontendPtr = T;
   AttachSegmentArrays(*T);
   SetupGuest64BitSegments(*T);
@@ -972,10 +976,10 @@ void DeliverPendingAtSyscallExit(GuestThread& T, uint64_t Number, uint64_t Resul
 
   auto& State = T.Thread->CurrentFrame->State;
 
-  // the syscall has to be finished by hand, because the JIT block that issued it is about to be
-  // abandoned. RIP is still *at* the two-byte `syscall` -- FEX hands the handler the state as it was
-  // when the instruction began (OpDispatchBuilder::SyscallOp) and lets the JIT step over it on
-  // the way back -- so stepping it is ours, and RAX is ours to write.
+  // the syscall has to be finished by hand, because this path never gets back to CompleteSyscall
+  // (syscall_args.h). RIP is still *at* the two-byte `syscall` -- FEX hands the handler the state as
+  // it was when the instruction began (OpDispatchBuilder::SyscallOp) -- so stepping it is ours, and
+  // RAX is ours to write.
   //
   // unless the signal asked for the call to be restarted, in which case the step is simply not
   // taken and the syscall number goes back where the guest put it. that is exactly what linux does
@@ -1190,9 +1194,9 @@ uint64_t Clone(FEXCore::Core::CpuStateFrame* Frame, uint64_t Flags, uint64_t Sta
   auto* T = new GuestThread;
 
   // inherit the parent's whole CPUState, then correct the parts a new thread does not inherit.
-  // this ordering is forced: CreateThread memcpy's the state over whatever RIP and RSP were passed
-  // in (ContextImpl::CreateThread), so passing them as arguments would be silently discarded.
-  T->Thread = CTX->CreateThread(0, 0, &Frame->State);
+  // CreateThread memcpy's the state it is given (ContextImpl::CreateThread), so the corrections
+  // can only come after it.
+  T->Thread = CTX->CreateThread(&Frame->State);
   if (!T->Thread) {
     delete T;
     return static_cast<uint64_t>(-ENOMEM);
@@ -1211,8 +1215,9 @@ uint64_t Clone(FEXCore::Core::CpuStateFrame* Frame, uint64_t Flags, uint64_t Sta
   State.gregs[FEXCore::X86State::REG_RSP] = StackPtr;
 
   // RIP still points *at* the `syscall` instruction: FEX hands the syscall handler the state as it
-  // was when the instruction began, and lets the JIT resume the parent past it. the child has no
-  // JIT block to resume into, so it has to be stepped over the two bytes of `0F 05` by hand.
+  // was when the instruction began. the parent is stepped past it when its handler returns
+  // (CompleteSyscall, syscall_args.h); the child never returns through that handler, so it has to
+  // be stepped over the two bytes of `0F 05` here.
   State.rip += 2;
 
   if (Flags & CLONE_SETTLS) {

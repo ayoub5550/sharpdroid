@@ -103,7 +103,7 @@ three **git submodules under `external/`**, each pinned to an exact commit:
 
 | | pin | license | what it is |
 | --- | --- | --- | --- |
-| [FEX](https://github.com/FEX-Emu/FEX) | tag `FEX-2608`, `e869aa644` | MIT | the x86-64 translation core the host layer links |
+| [FEX](https://github.com/FEX-Emu/FEX) | tag `FEX-2609.1`, `9fbdc00bd` | MIT | the x86-64 translation core the host layer links |
 | [libadrenotools](https://github.com/bylaws/libadrenotools) | `8fae8ce` | BSD-2-Clause | custom GPU driver loading |
 | [the SharpEmu fork](https://github.com/mircowuffwuff/sharpemu) | the `android` commit a bundled build is cut from | GPL-2.0-or-later | the emulator itself |
 

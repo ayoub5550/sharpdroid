@@ -745,7 +745,7 @@ void ReportStreams() {
   }
 }
 
-uint64_t Handle(FEXCore::Core::CpuStateFrame* Frame, FEXCore::HLE::SyscallArguments* Args) {
+uint64_t Handle(FEXCore::Core::CpuStateFrame* Frame, HostLayer::SyscallArguments* Args) {
   const uint32_t Id = static_cast<uint32_t>(Args->Argument[0] & 0xFFFF);
 
   // the guest half of the thunk is a file staged next to glibc, so it is found and loaded whether

@@ -1,7 +1,8 @@
 // sharpdroid host layer -- guest linux x86-64 syscalls onto bionic/android.
 //
-// FEX's JIT hands us the guest's RAX/RDI/RSI/RDX/R10/R8/R9 in SyscallArguments::Argument[0..6]
-// and puts our return value back in guest RAX. everything else is ours to do.
+// FEX's JIT hands us the guest's frame; we read RAX/RDI/RSI/RDX/R10/R8/R9 out of it into
+// SyscallArguments::Argument[0..6] and put our return value back in guest RAX (syscall_args.h).
+// everything else is ours to do.
 //
 // the two translations that matter, and are easy to get wrong by assuming they are no-ops:
 //   - *values*, where a guest constant differs from the arm64 one. PROT_*, MAP_* and errno are
@@ -15,6 +16,7 @@
 #include "guest_procfs.h"
 #include "guest_signals.h"
 #include "pad_bridge.h"
+#include "syscall_args.h"
 #include "vma_tracker.h"
 #include "vulkan_thunk.h"
 
@@ -54,7 +56,10 @@ public:
     return LastUnhandled.load(std::memory_order_relaxed);
   }
 
-  uint64_t HandleSyscall(FEXCore::Core::CpuStateFrame* Frame, FEXCore::HLE::SyscallArguments* Args) override;
+  // FEX-2609's entry point: the frame alone, with the arguments, the result and the step past the
+  // instruction all ours to do. it reads the one, runs Handle, and does the others -- see
+  // syscall_args.h.
+  void HandleSyscall(FEXCore::Core::CpuStateFrame* Frame) override;
 
   // the three halves of the contract with FEXCore's SMC tracking. all of them are backed by
   // vma_tracker.{h,cpp}, which is where the reasoning lives.
@@ -67,9 +72,13 @@ public:
   }
 
 private:
-  ///< the syscall table proper. HandleSyscall is a wrapper around it that turns the return into a
+  ///< the syscall with its signal and pause brackets, returning what goes in RAX. this is what
+  ///< HandleSyscall was until FEX-2609 moved the register marshalling out of the JIT.
+  uint64_t Handle(FEXCore::Core::CpuStateFrame* Frame, HostLayer::SyscallArguments* Args);
+
+  ///< the syscall table proper. Handle is a wrapper around it that turns the return into a
   ///< delivery point for asynchronous signals -- see guest_threads.h.
-  uint64_t Dispatch(FEXCore::Core::CpuStateFrame* Frame, FEXCore::HLE::SyscallArguments* Args);
+  uint64_t Dispatch(FEXCore::Core::CpuStateFrame* Frame, HostLayer::SyscallArguments* Args);
 
   uint64_t HandleBrk(uint64_t NewBreak);
 

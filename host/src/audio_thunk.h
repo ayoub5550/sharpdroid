@@ -60,6 +60,8 @@
 #include <FEXCore/Core/CoreState.h>
 #include <FEXCore/HLE/SyscallHandler.h>
 
+#include "syscall_args.h"
+
 #include <cstdint>
 
 namespace HostLayer::AudioThunk {
@@ -103,7 +105,7 @@ void SetWatchdog(bool Verbose);
 void SetLibraryPath(const char* Path);
 
 // the dispatch entry, called from LinuxSyscallHandler::Dispatch for any magic number.
-uint64_t Handle(FEXCore::Core::CpuStateFrame* Frame, FEXCore::HLE::SyscallArguments* Args);
+uint64_t Handle(FEXCore::Core::CpuStateFrame* Frame, HostLayer::SyscallArguments* Args);
 
 // how far the device has actually played, sampled from the streams the guest opened.
 //

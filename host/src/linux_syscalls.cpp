@@ -521,12 +521,10 @@ void LinuxSyscallHandler::SetFileProbeRoot(const char* Root) {
   std::fflush(stdout);
 }
 
-LinuxSyscallHandler::LinuxSyscallHandler() {
-  // OS_LINUX64 is what marshals guest RAX/RDI/... into SyscallArguments::Argument[]. OS_GENERIC
-  // ("no JIT-side argument handling, spill/fill all regs") does not, and the handler then
-  // receives garbage.
-  OSABI = FEXCore::HLE::SyscallOSABI::OS_LINUX64;
-}
+// up to FEX-2608 this set OSABI = OS_LINUX64, which was what made the JIT marshal guest
+// RAX/RDI/... into the handler's arguments. FEX-2609 removed the OSABI selection along with the
+// marshalling; the frame is read in HandleSyscall instead.
+LinuxSyscallHandler::LinuxSyscallHandler() = default;
 
 void LinuxSyscallHandler::SetBrkBase(uint64_t Base) {
   std::lock_guard Lock {BrkLock};
@@ -598,7 +596,17 @@ void LinuxSyscallHandler::InvalidateGuestCodeRange(FEXCore::Core::InternalThread
   VMA::Invalidate(Thread, Start, Length);
 }
 
-uint64_t LinuxSyscallHandler::HandleSyscall(FEXCore::Core::CpuStateFrame* Frame, FEXCore::HLE::SyscallArguments* Args) {
+void LinuxSyscallHandler::HandleSyscall(FEXCore::Core::CpuStateFrame* Frame) {
+  // the whole of the FEX-2609 change in one place: the arguments come out of the spilled frame,
+  // and the result goes back into it, because the JIT no longer does either -- and since
+  // FEX-2609.1 so does the step past the `syscall` instruction, because the JIT now resumes from
+  // CPUState::rip (see syscall_args.h). a path that does not return -- rt_sigreturn, a signal
+  // delivered at the syscall's exit, a thread's exit -- writes the state it needs itself.
+  auto Args = SyscallArguments::FromFrame(Frame);
+  CompleteSyscall(Frame, Handle(Frame, &Args));
+}
+
+uint64_t LinuxSyscallHandler::Handle(FEXCore::Core::CpuStateFrame* Frame, HostLayer::SyscallArguments* Args) {
   auto* Self = static_cast<GuestThread*>(Frame->Thread->FrontendPtr);
   if (!Self) {
     return Dispatch(Frame, Args);
@@ -632,7 +640,7 @@ uint64_t LinuxSyscallHandler::HandleSyscall(FEXCore::Core::CpuStateFrame* Frame,
   return Result;
 }
 
-uint64_t LinuxSyscallHandler::Dispatch(FEXCore::Core::CpuStateFrame* Frame, FEXCore::HLE::SyscallArguments* Args) {
+uint64_t LinuxSyscallHandler::Dispatch(FEXCore::Core::CpuStateFrame* Frame, HostLayer::SyscallArguments* Args) {
   const uint64_t Number = Args->Argument[0];
 
   // the vulkan thunk rides in on the syscall boundary rather than beside it, because the boundary
