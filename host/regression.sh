@@ -18,6 +18,16 @@ export LD_LIBRARY_PATH=.
 
 FAILED=0
 
+# **every mode runs under a time limit, and running into it is a failure of its own kind.** a host
+# layer that spins -- a guard that keeps invalidating the block it guards, a wait nothing will ever
+# wake -- otherwise never returns, and the set stops at that mode with nothing printed for the rest:
+# on a test lab device that is the whole time slot gone and no verdict at all. the slowest mode here
+# is aaudio, at three seconds of tone, so a minute is generous on any device that can run the set;
+# override it with REGRESSION_TIMEOUT for a debugger or a slow emulator. 124 is what toybox's and
+# coreutils' `timeout` exit with when they had to kill.
+LIMIT=${REGRESSION_TIMEOUT:-60}
+TIMED_OUT=124
+
 # %-19s is the width of the longest mode name, `asyncsig-safepoint`. widen it if a longer one
 # arrives; nothing breaks if it is not widened, the column just stops lining up.
 report() {
@@ -27,10 +37,14 @@ report() {
 run() {
   NAME=$1
   shift
-  ./sharpdroid-host-layer "$@" >./last-run.log 2>&1
+  timeout "$LIMIT" ./sharpdroid-host-layer "$@" >./last-run.log 2>&1
   STATUS=$?
   if [ "$STATUS" -eq 0 ]; then
     report PASS "$NAME" ""
+  elif [ "$STATUS" -eq "$TIMED_OUT" ]; then
+    report FAIL "$NAME" "(no exit within ${LIMIT}s)"
+    tail -n 25 ./last-run.log
+    FAILED=1
   else
     report FAIL "$NAME" "(exit $STATUS)"
     tail -n 25 ./last-run.log
@@ -40,13 +54,18 @@ run() {
 
 # a mode whose whole point is that it does not work. the second argument is what to say when it
 # *does*, because "it passed" is the confusing outcome here and a reader needs to be told why that
-# is bad news rather than good.
+# is bad news rather than good. running out of time is not the failure being asked for: a guest
+# that never finishes has not shown that anything was refused, so it fails the mode too.
 run_fails() {
   NAME=$1
   WHY=$2
   shift 2
-  ./sharpdroid-host-layer "$@" >./last-run.log 2>&1
-  if [ $? -ne 0 ]; then
+  timeout "$LIMIT" ./sharpdroid-host-layer "$@" >./last-run.log 2>&1
+  STATUS=$?
+  if [ "$STATUS" -eq "$TIMED_OUT" ]; then
+    report FAIL "$NAME" "(no exit within ${LIMIT}s)"
+    FAILED=1
+  elif [ "$STATUS" -ne 0 ]; then
     report PASS "$NAME" "fails as it should"
   else
     report FAIL "$NAME" "$WHY"
@@ -108,6 +127,12 @@ run_fails aaudio-off "aaudio played without the thunk enabled" --libs ./guest-li
 # needs no page protection at all, only InvalidateGuestCodeRange -- so it has to keep working or
 # there is nothing to fall back to. `none` is expected to *fail*, and is checked for failing:
 # it is what says the smc guest is testing something rather than passing by accident.
+#
+# under FEX-2609 `smc-full` is expected to run out of time at the guest's test 4, and that is FEX's
+# bug rather than ours: the jump into a non-executable page decodes to a zero-length instruction, the
+# full-SMC guard over it checksums no bytes but compares a scratch register that was never written,
+# sees "changed", invalidates and recompiles the same block forever. docs/host-layer.md has the
+# one-line fix. it is left failing here, not skipped, so the day a FEX bump fixes it this says so.
 run smc-full --smc full ./smc
 run_fails smc-none "smc passed without SMC detection -- the test is not testing anything" --smc none ./smc
 
