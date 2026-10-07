@@ -54,6 +54,12 @@ set(ARCHITECTURE_arm64 1)
 add_compile_definitions(ARCHITECTURE_arm64=1)
 add_compile_definitions(_M_ARM_64=1)
 
+# the arm64 tuning FEX's top level always applies and FEXCore/ alone does not: `+crc`. since FEX-2609
+# the SMCChecks=full block guard hashes guest bytes with the crc32 intrinsics (Core.cpp), which clang
+# refuses to inline without the feature. it is FEX's own floor, not a new one -- "Need to always
+# append crc" -- and every arm64 SoC an adreno driver ships on implements it.
+add_compile_options("-march=armv8-a+crc")
+
 # bionic gaps, patched in from our side rather than by editing FEX. see the header for why.
 #
 # the header is referenced by bare filename and found via the include path, deliberately: an
@@ -141,6 +147,10 @@ set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 # --- dependency graph, in the order the top-level FEX CMakeLists builds it -------------
 add_subdirectory("${FEX_ROOT}/External/unordered_dense"        External/unordered_dense)
 add_subdirectory("${FEX_ROOT}/External/vixl"                   External/vixl)
+# the vixl FEX-2609 pins uses std::map in aarch64/disasm-aarch64.cc without including <map>, which
+# libstdc++ supplies transitively and the NDK's libc++ does not. supplied from here, the same way
+# bionic-compat.h fills bionic's gaps, so the FEX checkout stays untouched.
+target_compile_options(vixl PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:SHELL:-include map>")
 add_subdirectory("${FEX_ROOT}/External/xxhash/cmake_unofficial" External/xxhash)
 add_subdirectory("${FEX_ROOT}/External/fmt"                    External/fmt)
 add_subdirectory("${FEX_ROOT}/External/range-v3"               External/range-v3)
@@ -163,6 +173,13 @@ add_subdirectory("${FEX_ROOT}/FEXCore"                         FEXCore)
 # the static library regardless -- FEXCore gets linked directly into the single bionic .so we
 # ship, together with our own frontend. so drop the .so from the default target.
 set_target_properties(FEXCore_shared PROPERTIES EXCLUDE_FROM_ALL TRUE)
+
+# JemallocLibs is the allocator meta-library only that .so links; the host layer links JemallocDummy
+# (bionic's allocator). since FEX-2609 its one source includes <FEXCore/Utils/PrctlUtils.h>, and the
+# include directory that resolves it is added only under ENABLE_FEX_ALLOCATOR, which is off here --
+# so built by default it fails to compile despite nothing needing it. out of the default target with
+# the library it belongs to, rather than patched into compiling.
+set_target_properties(JemallocLibs PROPERTIES EXCLUDE_FROM_ALL TRUE)
 
 # and make the static target self-describing, so whatever links FEXCore picks up FEXCore_Base
 # (and transitively fmt, vixl, xxhash, SoftFloat, cephes) without having to know it must.

@@ -435,13 +435,15 @@ FEXCore::HostFeatures ProbedFeatures() {
   // and neither is safe alone: with the ops off, a guest cacheline clear becomes a bare barrier and
   // nothing is written back; with them on and a size of zero, the emitter divides by that zero to
   // work out how many lines to walk.
+  //
+  // since FEX-2609 the size is stored as CTR_EL0's own log2-of-words field (DminLine, 4 << it is the
+  // line in bytes, read back through DCacheSize()) and the icache size is gone -- nothing emitted
+  // against it. 4 is the 64-byte fallback, the same one FEX's own frontend uses (Common/HostFeatures.cpp).
   Features.SupportsCacheMaintenanceOps = true;
   if (Registers.CTR) {
-    Features.DCacheLineSize = 4 << ((Registers.CTR >> 16) & 0xF);
-    Features.ICacheLineSize = 4 << (Registers.CTR & 0xF);
+    Features.DCacheLineLog2 = (Registers.CTR >> 16) & 0xF;
   } else {
-    Features.DCacheLineSize = 64;
-    Features.ICacheLineSize = 64;
+    Features.DCacheLineLog2 = 4;
   }
 
   // a property of the compiler that built FEXCore, not of the CPU, and false here for a reason
@@ -508,14 +510,14 @@ void Report(const FEXCore::HostFeatures& Features, Mode Chosen) {
   std::printf("[host-layer] host features (%s): AES=%d AES256=%d CRC=%d SHA=%d PMULL128=%d Atomics=%d RCPC=%d TSOImm9=%d "
               "AFP=%d FlagM=%d FlagM2=%d RPRES=%d FRINTTS=%d FCMA=%d ECV=%d RAND=%d CLZERO=%d CSSC=%d MOPS=%d WFXT=%d "
               "AVX=%d SVE128=%d SVE256=%d SVEBitPerm=%d 3DNow=%d PreserveAllABI=%d FloatExceptions=%d "
-              "CacheOps=%d dcache=%u icache=%u, %zu core(s)\n",
+              "CacheOps=%d dcache=%u, %zu core(s)\n",
               Chosen == Mode::Probe ? "probe" : "minimal", Features.SupportsAES, Features.SupportsAES256, Features.SupportsCRC,
               Features.SupportsSHA, Features.SupportsPMULL_128Bit, Features.SupportsAtomics, Features.SupportsRCPC,
               Features.SupportsTSOImm9, Features.SupportsAFP, Features.SupportsFlagM, Features.SupportsFlagM2, Features.SupportsRPRES,
               Features.SupportsFRINTTS, Features.SupportsFCMA, Features.SupportsECV, Features.SupportsRAND, Features.SupportsCLZERO,
               Features.SupportsCSSC, Features.SupportsMOPS, Features.SupportsWFXT, Features.SupportsAVX, Features.SupportsSVE128,
               Features.SupportsSVE256, Features.SupportsSVEBitPerm, Features.Supports3DNow, Features.SupportsPreserveAllABI,
-              Features.SupportsFloatExceptions, Features.SupportsCacheMaintenanceOps, Features.DCacheLineSize, Features.ICacheLineSize,
+              Features.SupportsFloatExceptions, Features.SupportsCacheMaintenanceOps, Features.DCacheSize(),
               Features.CPUMIDRs.size());
 }
 

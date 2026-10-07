@@ -46,6 +46,8 @@
 #include <FEXCore/Core/CoreState.h>
 #include <FEXCore/HLE/SyscallHandler.h>
 
+#include "syscall_args.h"
+
 #include <cstdint>
 
 // forward-declared at global scope on purpose, so that everything including this header does not
@@ -156,7 +158,7 @@ void SetTurbo(bool Enabled);
 void StopTurbo();
 
 // the dispatch entry, called from LinuxSyscallHandler::Dispatch for any magic number.
-uint64_t Handle(FEXCore::Core::CpuStateFrame* Frame, FEXCore::HLE::SyscallArguments* Args);
+uint64_t Handle(FEXCore::Core::CpuStateFrame* Frame, HostLayer::SyscallArguments* Args);
 
 // the extent the faked surface reports, and therefore the size of every swapchain image. without
 // a window this is whatever the guest should think it has, set by --vulkan-size; with one it is

@@ -229,7 +229,7 @@ void SelfTest() {
   }
 }
 
-uint64_t Read(FEXCore::HLE::SyscallArguments* Args) {
+uint64_t Read(HostLayer::SyscallArguments* Args) {
   const uint32_t Number = static_cast<uint32_t>(Args->Argument[1]);
   void* Out = reinterpret_cast<void*>(Args->Argument[2]);
   const uint64_t Size = Args->Argument[3];
@@ -401,7 +401,7 @@ void SetControls(uint32_t Port, const Controls& Pad) {
   State.Connected = Pad.Connected ? 1 : 0;
 }
 
-uint64_t Handle(FEXCore::Core::CpuStateFrame*, FEXCore::HLE::SyscallArguments* Args) {
+uint64_t Handle(FEXCore::Core::CpuStateFrame*, HostLayer::SyscallArguments* Args) {
   const uint32_t Id = static_cast<uint32_t>(Args->Argument[0] & 0xFFFF);
 
   // an unenabled bridge answers rather than letting the magic number fall through to the syscall

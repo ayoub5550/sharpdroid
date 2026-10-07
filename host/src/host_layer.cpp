@@ -226,15 +226,14 @@ bool SpikeSyscallWasCalled = false;
 
 class SpikeSyscallHandler final : public FEXCore::HLE::SyscallHandler {
 public:
-  SpikeSyscallHandler() {
-    OSABI = FEXCore::HLE::SyscallOSABI::OS_LINUX64;
-  }
-
-  uint64_t HandleSyscall(FEXCore::Core::CpuStateFrame*, FEXCore::HLE::SyscallArguments* Args) override {
+  // read through the same SyscallArguments as the real handler, so the spike's syscall check is
+  // also a check of the register marshalling FEX-2609 handed over to us.
+  void HandleSyscall(FEXCore::Core::CpuStateFrame* Frame) override {
+    const auto Args = HostLayer::SyscallArguments::FromFrame(Frame);
     std::printf("[host-layer]   guest syscall: number=0x%llX arg0=0x%llX\n",
-                static_cast<unsigned long long>(Args->Argument[0]), static_cast<unsigned long long>(Args->Argument[1]));
-    SpikeSyscallWasCalled = Args->Argument[0] == SpikeSyscallNumber && Args->Argument[1] == SpikeSyscallArg;
-    return 0;
+                static_cast<unsigned long long>(Args.Argument[0]), static_cast<unsigned long long>(Args.Argument[1]));
+    SpikeSyscallWasCalled = Args.Argument[0] == SpikeSyscallNumber && Args.Argument[1] == SpikeSyscallArg;
+    HostLayer::CompleteSyscall(Frame, 0);
   }
 
   // the spike goes through the same VMA tracker as everything else rather than claiming the whole
