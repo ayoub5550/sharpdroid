@@ -459,6 +459,14 @@ class SettingsSectionActivity : AppCompatActivity() {
             summary = R.string.setting_host_feature_probe_summary,
             default = true,
         ),
+        // and below that for the same reason: it decides how soon a translation arrives and never
+        // what it is, so it is a switch beside the ladder rather than a rung on it.
+        SettingRow.Switch(
+            key = Settings.KEY_CODE_CACHE,
+            title = R.string.setting_code_cache,
+            summary = R.string.setting_code_cache_summary,
+            default = true,
+        ),
     )
 
     /**

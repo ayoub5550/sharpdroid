@@ -140,7 +140,7 @@ a subsection is a label above a run of rows rather than another button press.
 | section | rows |
 | --- | --- |
 | App | Theme, Theme color while Custom is chosen, Fullscreen mode, Estimate loading progress, Resume games on return |
-| Emulation | under a SharpEmu label, SharpEmu build; under a FEXCore label, JIT accuracy and Probe host instructions |
+| Emulation | under a SharpEmu label, SharpEmu build; under a FEXCore label, JIT accuracy, Probe host instructions and Keep translated code |
 | Graphics | Internal resolution, and under a Vulkan label, Graphics driver and Disk shader cache |
 | Controls | Controller vibration, Automatic controller mapping, and under a Controller ports label, Port 1 to Port 4, each opening that port's bindings and motors. a port's controller glyph is filled in the accent while a device one of its bindings names is connected, as Eden marks a connected player, and an outline otherwise; the devices under it are drawn the same way one by one, a device that is not connected in the body colour and marked (not connected). a game's own Controls screen draws Controller vibration alone, the mapping being the app's |
 | Game files | Game folders, and All files access where the platform has it |
@@ -318,6 +318,7 @@ all of them are read in `onCreate`, because the intent is not readable from a wo
 | `--ez strict true` | `--strict` on the **payload's** own command line, which fails a launch on an unresolved import instead of continuing without it. everything after the payload path is the guest's command line, which the host layer passes through without reading | the stored setting, or absent |
 | `--es fex A=1,B=2` | comma-separated FEXCore options by their own names, one `--fex` each, **after** the preset's and the rows', so a launch measuring one knob overrides both. the host layer refuses a name FEXCore's table does not have | none |
 | `--ez hostprobe false` | `--host-features minimal` instead of the probed host feature set | the stored setting, or on |
+| `--ez codecache false` | no FEXCore code cache. on is `--fex DiskCache=1` and this build's directory under it — see below. a launch with `--es fexpreset none` names no cache whatever this says | the stored setting, or on |
 | `--ez shadercache true` | the vulkan pipeline cache on disk. off is `SHARPEMU_VK_PIPELINE_CACHE=0` in the guest environment | the stored setting, or off |
 | `--ez tracepad true` | `--trace-pad`, and every port the controller mapping pushes — [`pad.md`](pad.md) | off |
 | `--ez padselftest true` | `--pad-selftest`, one full-strength rumble on each port in turn at the first poll — [`pad.md`](pad.md) | off |
@@ -368,6 +369,7 @@ the store is a `SharedPreferences` line and the state is `contains(key)`. nothin
 | Disk shader cache | off is `SHARPEMU_VK_PIPELINE_CACHE=0` in the guest environment, and off is also what an untouched row gives — the one row whose default is not the payload's |
 | JIT accuracy | one `--fex Name=Value` per knob the chosen rung names, then one per knob overridden on it, on the **host layer's** command line |
 | Probe host instructions | off is `--host-features minimal` on the host layer's command line; on contributes nothing |
+| Keep translated code | on is `--fex DiskCache=1 --fex DiskCachePath=<dir>/` on the host layer's command line, after the rung and its rows and before `--es fex`; off contributes nothing |
 | Controller vibration, Automatic controller mapping, the controller ports | the process that runs the guest, read once at launch. never the argument vector — [`pad.md`](pad.md) |
 
 ### JIT accuracy
@@ -434,6 +436,8 @@ four rungs from most faithful to fastest — Stability, Compatibility, Intermedi
 **Adaptive block cache leads the group because the row under it does nothing while it is off**: nothing is resized, so nothing shrinks. off, it holds every guest thread's L1 at its maximum of 16 MB rather than sizing it to fit, which costs around 150 MB. **the limit that reaches is memory and nothing announces it**: no knob refuses, and the process simply has more to lose the longer it runs.
 
 **Probe host instructions is a switch beside the ladder rather than a rung on it.** on, which is the default and contributes no argument, the host layer reads this processor's own ID registers and describes what it finds to FEXCore; off travels as `--host-features minimal` and asks for the conservative set instead. it is not a rung because every rung above the middle spends faithfulness for speed and this spends nothing — understating the host's instruction set changes how many instructions a translation takes and never what it computes, so a rung that turned it off would be slower and no more faithful. what the switch is for is the case the ladder cannot express: a device this probe reads wrongly, on hardware nobody here has. [`host-layer.md`](host-layer.md) is what it reads and which errata it honours.
+
+**Keep translated code is the other switch beside the ladder, and it is on by default.** it keeps FEXCore's translations on disk between runs: measured on a Snapdragon 8 Gen 3, a ReadyToRun payload boots to the guest's entry in 2.4-2.5 s cold and 1.50-1.56 s warm, and the run that writes the cache is no slower than one without. it is not a rung for Probe host instructions' reason — FEX keys every entry by its configuration as well as by the guest's bytes, so it changes when a translation arrives and never what it is. **what kept it opt-in was that nothing bounded it, and `CodeCache` is the bound.** each payload, as run by one install of the app, gets a directory of its own under `fex-code-cache/` in the app's cache directory, and before every run the whole of it is brought under 512 MB: other builds' directories go first, least recently used first, and the one about to be used is started over only if it alone is over. it is the cache directory because every byte is derived — the platform may reclaim it, *Clear cache* in the system's app info drops it, and an export never carries it. a cache that cannot be set up is a launch without one rather than a refused launch.
 
 **`--es fexpreset none` is the launch that names no JIT configuration at all**, and it is not a rung: no `--fex` leaves the app, and the translation is whatever FEXCore and the host layer settle on between them. it is the argument vector this project's older figures were taken on, kept expressible so a run can still be compared against them. it is a launch extra and never a stored setting — a row for it would promise a configuration nobody can read off the screen, which is the thing every rung naming every knob exists to prevent. `--es fex` is unaffected either way: a knob named on the command line was asked for by name.
 
