@@ -23,6 +23,7 @@
 
 #include "boot_progress.h"
 #include "elf_loader.h"
+#include "fex_threads.h"
 #include "guest_files.h"
 #include "guest_log.h"
 #include "host_features.h"
@@ -179,6 +180,11 @@ void PrintRunSummary() {
   if (HostLayer::Threads::CallRetResetCount()) {
     std::printf("[host-layer] %llu call-return shadow stack reset(s) after a guard-page fault\n",
                 static_cast<unsigned long long>(HostLayer::Threads::CallRetResetCount()));
+  }
+  if (HostLayer::FEXThreads::Created()) {
+    // only ever the disk cache writer today -- see fex_threads.h. printed so that a run with
+    // `--fex DiskCache=1` shows the cache actually came up rather than being silently off.
+    std::printf("[host-layer] %u FEXCore worker thread(s) started\n", HostLayer::FEXThreads::Created());
   }
   if (HostLayer::Threads::JITSpaceRestartCount()) {
     std::printf("[host-layer] %llu compile(s) outgrew the JIT scratch buffer and were restarted with more\n",
@@ -945,6 +951,10 @@ int HostLayer::RunMain(int argc, char** argv) {
   // wide moves the thunk boundary's ABI, which is the one thing in this probe that can break a
   // thunk rather than merely slow the JIT down.
   HostLayer::ThunkABI::SetAvxRegisterFile(Features.SupportsAVX && Features.SupportsSVE256);
+
+  // before the context exists: its constructor is where DiskCache::Init starts the cache writer,
+  // and without this FEXCore's thread creation is an ERROR_AND_DIE -- see fex_threads.h.
+  HostLayer::FEXThreads::Install();
 
   auto CTX = FEXCore::Context::Context::CreateNewContext(Features);
   if (!CTX) {
