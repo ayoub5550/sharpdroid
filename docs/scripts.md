@@ -46,6 +46,8 @@ py scripts/run.py --game existing      launch what is already on the device
 | **`scripts/run.py`** | **build it, put it on the device, start it, show the log.** the one command you want most of the time |
 | `scripts/build.py` | build everything in dependency order. `--list` prints the steps and what each does, `--install` installs the APK, `--clean` wipes what the native steps write, `--force` fetches again as well, `--only <step>` runs one |
 | `scripts/regression.py` | stage the shell binary and run the host layer's 19 regression modes on the device. **exits non-zero if any fail**, so it can gate anything |
+| `scripts/vm.py` | **no phone?** the same regression set, and anything else that is not graphics or audio, inside a qemu-system-aarch64 VM whose userspace is android's own bionic. `fetch` once, then `regression`, or `run [--payload build/builds/<id>] -- <command>`. [vm.md](vm.md) says what a VM number is worth |
+| `scripts/vm-boot-bench.sh` | the payload's boot, timed inside the VM under several .NET and FEX configurations. run through `vm.py run --payload`, never by hand |
 
 ### the screen
 
