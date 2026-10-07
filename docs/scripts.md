@@ -164,12 +164,15 @@ py scripts/package-build.py                                        whatever bran
 py scripts/package-build.py --branch android                       the timestamp stamps itself
 py scripts/package-build.py --no-publish                           repackage what is already published
 py scripts/package-build.py --jit                                  IL only, for comparing against the default
+py scripts/package-build.py --compress                             single-file compression kept, likewise
 py scripts/package-build.py --from-archive <path or url> --id android
 ```
 
 it produces a **directory and a zip** under `build/builds/` and stops. producing a build and putting one on a device are two jobs, which is what lets a build packaged last week — or one somebody else packaged — be staged without republishing anything.
 
 **the payload is published ReadyToRun.** SharpEmu runs as guest code, so its JIT runs under FEX too, and every method it compiles before the guest's entry point is compiled by translated x86-64. publishing ahead of time takes that from about 25,000 methods to about 500, and a boot to `Calling guest entry` of a trivial guest from 5.4-5.7 s to 2.8-3.0 s on a Snapdragon 8 Gen 3 phone. the precompiled code is x86-64 like everything else in the payload, so nothing about the translation changes — there is only less of it. `--jit` is the old IL-only publish and exists for the comparison; the publish stamp records which of the two a tree is, so `--no-publish` refuses to package one as the other, and a stamp from before the mode was recorded counts as `jit`, because every publish of that era was. an archive is published already, so `--from-archive` refuses `--jit` rather than letting a package claim a choice nobody made.
+
+**and it is published uncompressed, which the fork's csproj is not.** single-file compression is undone at every launch by translated code, and on the same phone that is about 0.45 s of every boot: 2.78-2.95 s against 2.37-2.53 s cold, and 1.90-1.97 s against 1.50-1.56 s with a warm code cache. what it saved looked like APK size and is not — an APK deflates its assets whatever is in them, for the reason the bundled build is a tree rather than a zip, so a ReadyToRun payload costs about 77 MB of APK compressed and 78 MB not. what is left is the copy on the device, 197 MB rather than 87, paid once per build rather than once per launch, and the bytes `stage.py` pushes. `--compress` keeps the csproj's setting for comparing; the publish stamp records the packing beside the mode, a stamp from before it did counts as compressed, and `--from-archive` refuses `--compress` as it refuses `--jit`.
 
 **`--from-archive` needs no fork checkout, no .NET SDK and no git.** that is the path a third party takes, and the one any automated job would take. what it cannot do is record a commit, so the build's `commit` is empty and its `source` names the archive instead — and with no fork there is no remote to take an author from either, so `--author` is how one is set there.
 

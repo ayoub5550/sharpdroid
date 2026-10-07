@@ -113,6 +113,11 @@ def entry():
                         help="publish IL only, compiled by the JIT at every launch, instead of "
                              "ReadyToRun. the payload is smaller and boots several seconds slower "
                              "under translation; there for comparing the two.")
+    parser.add_argument("--compress", action="store_true",
+                        help="keep the csproj's single-file compression. the payload on disk is less "
+                             "than half the size and every launch spends about 0.45 s on a phone "
+                             "decompressing it; inside an APK, which deflates it either way, the two "
+                             "differ by about a megabyte. there for comparing the two.")
     parser.add_argument("--from-archive", metavar="PATH", default=None,
                         help="a published linux-x64 tree as an archive or a directory, by path or "
                              "URL, instead of a fork checkout.")
@@ -153,10 +158,11 @@ def from_archive(toolchain, arguments):
     the same shape as an unpacked archive, and this is what gives one an identity without a fork
     checkout or a repackage.
     """
-    if arguments.jit:
+    if arguments.jit or arguments.compress:
         # an archive is published already, compiled however its producer compiled it. accepting
         # the flag would let a package claim a choice nobody made.
-        raise Refusal("--jit chooses how the fork is published, and an archive is already published")
+        raise Refusal("{} chooses how the fork is published, and an archive is already "
+                      "published".format("--jit" if arguments.jit else "--compress"))
     if not arguments.id:
         raise Refusal("--from-archive needs --id: there is no branch to take the build's id from")
     branch = arguments.id
@@ -265,9 +271,12 @@ def from_fork(toolchain, arguments):
     # and how it was compiled, for the same reason: a JIT publish and a ReadyToRun one of the same
     # commit are both valid payloads that behave very differently, and --no-publish must not let one
     # be repackaged under the belief that it is the other. a stamp from before the mode was recorded
-    # is two fields, and every publish of that era was a JIT one.
+    # is two fields, and every publish of that era was a JIT one. the packing is the fourth field for
+    # the same reason, and a stamp from before it was recorded is three: every publish of that era
+    # kept the csproj's compression.
     mode = "jit" if arguments.jit else "readytorun"
-    identity = "{} {} {}".format(branch, commit, mode)
+    packing = "compressed" if arguments.compress else "uncompressed"
+    identity = "{} {} {} {}".format(branch, commit, mode, packing)
 
     if not arguments.no_publish:
         step("publishing {}".format(branch))
@@ -287,14 +296,23 @@ def from_fork(toolchain, arguments):
         # translation changes -- there is just much less of it to do. the JIT is still there for
         # what R2R cannot precompile (generic instantiations over types from another assembly,
         # dynamic methods), and tiered compilation still re-JITs hot methods, which is what keeps
-        # steady-state code quality where it was. single-file compression stays as the csproj
-        # sets it: on the same phone it costs about 0.45 s of decompression at launch (2.4-2.5 s
-        # without it) and keeps the payload, which ships inside the APK, at 87 MB rather than 197.
+        # steady-state code quality where it was.
+        #
+        # **and uncompressed by default, which the csproj is not.** single-file compression is
+        # undone at every launch, by translated code: on the same phone it is about 0.45 s of a
+        # boot -- 2.78-2.95 s against 2.37-2.53 s cold, 1.90-1.97 s against 1.50-1.56 s with a warm
+        # code cache. what it saves is disk, and less of it than it looks: an APK deflates its assets
+        # whatever is in them, so the payload costs about 77 MB of APK compressed and 78 MB not --
+        # the same reason build-format.md gives for the asset being a tree rather than a zip. what
+        # is left is the copy on the device, 197 MB rather than 87, which is paid once per build
+        # rather than once per launch. --compress keeps the csproj's setting, for comparing.
         command = [toolchain.dotnet, "publish",
                    str(fork / "src" / "SharpEmu.CLI" / "SharpEmu.CLI.csproj"),
                    "-c", "Release", "-r", "linux-x64"]
         if not arguments.jit:
             command.append("-p:PublishReadyToRun=true")
+        if not arguments.compress:
+            command.append("-p:EnableCompressionInSingleFile=false")
         run(command, env=environment)
         write_text(stamp, identity + "\n")
 
@@ -307,16 +325,22 @@ def from_fork(toolchain, arguments):
         was = stamp.read_text(encoding="utf-8").strip() if stamp.exists() else ""
         if was and len(was.split()) == 2:
             was += " jit"
+        if was and len(was.split()) == 3:
+            was += " compressed"
         if not was:
             raise Refusal(
                 "the publish tree at {} has no record of what it was built from, so --no-publish "
                 "cannot confirm it is {}. drop --no-publish to publish it again".format(
                     publish, identity))
-        if was != identity and was.rsplit(" ", 1)[0] == identity.rsplit(" ", 1)[0]:
+        if was != identity and was.split()[:2] == identity.split()[:2]:
+            was_mode, was_packing = was.split()[2:4]
+            flags = [flag for flag, on in (("--jit", was_mode == "jit"),
+                                           ("--compress", was_packing == "compressed")) if on]
             raise Refusal(
-                "the publish tree at {} is a {} publish of this commit and this would package it "
-                "as {}. {} --jit to match it, or drop --no-publish to publish again".format(
-                    publish, was.rsplit(" ", 1)[1], mode, "drop" if arguments.jit else "pass"))
+                "the publish tree at {} is a publish of this commit, {} and {}, and this would "
+                "package it as {} and {}. {} to match it, or drop --no-publish to publish "
+                "again".format(publish, was_mode, was_packing, mode, packing,
+                               "pass " + " ".join(flags) if flags else "pass neither --jit nor --compress"))
         if was != identity:
             raise Refusal(
                 "the publish tree at {} was built from '{}' and this would label it '{}'. drop "
