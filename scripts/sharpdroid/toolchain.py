@@ -170,10 +170,15 @@ class Toolchain:
         they are one piece rather than two: the android SDK ships ninja inside its cmake package,
         and handing cmake a make program from somewhere else is how a build ends up configured
         against one generator and built by another.
+
+        **an override needs no SDK behind it.** the default is spelled out only when there is no
+        override, because resolving it resolves the SDK -- and a native-only machine (a linux box
+        building the host layer for the VM loop, `docs/vm.md`) has an NDK and a cmake and no SDK at
+        all, which made `SHARPDROID_CMAKE` refuse for a reason that had nothing to do with cmake.
         """
-        return self._piece(
-            "cmake", "SHARPDROID_CMAKE", self.android_sdk / "cmake" / self.cmake_version / "bin",
-            marker=Path(_exe("cmake")))
+        default = None if os.environ.get("SHARPDROID_CMAKE") else (
+            self.android_sdk / "cmake" / self.cmake_version / "bin")
+        return self._piece("cmake", "SHARPDROID_CMAKE", default, marker=Path(_exe("cmake")))
 
     @property
     def cmake(self):
