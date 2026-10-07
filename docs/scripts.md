@@ -163,10 +163,13 @@ more than one may be named in a single command. everything lands on the app's ex
 py scripts/package-build.py                                        whatever branch the fork has checked out
 py scripts/package-build.py --branch android                       the timestamp stamps itself
 py scripts/package-build.py --no-publish                           repackage what is already published
+py scripts/package-build.py --jit                                  IL only, for comparing against the default
 py scripts/package-build.py --from-archive <path or url> --id android
 ```
 
 it produces a **directory and a zip** under `build/builds/` and stops. producing a build and putting one on a device are two jobs, which is what lets a build packaged last week — or one somebody else packaged — be staged without republishing anything.
+
+**the payload is published ReadyToRun.** SharpEmu runs as guest code, so its JIT runs under FEX too, and every method it compiles before the guest's entry point is compiled by translated x86-64. publishing ahead of time takes that from about 25,000 methods to about 500, and a boot to `Calling guest entry` of a trivial guest from 5.4-5.7 s to 2.8-3.0 s on a Snapdragon 8 Gen 3 phone. the precompiled code is x86-64 like everything else in the payload, so nothing about the translation changes — there is only less of it. `--jit` is the old IL-only publish and exists for the comparison; the publish stamp records which of the two a tree is, so `--no-publish` refuses to package one as the other, and a stamp from before the mode was recorded counts as `jit`, because every publish of that era was. an archive is published already, so `--from-archive` refuses `--jit` rather than letting a package claim a choice nobody made.
 
 **`--from-archive` needs no fork checkout, no .NET SDK and no git.** that is the path a third party takes, and the one any automated job would take. what it cannot do is record a commit, so the build's `commit` is empty and its `source` names the archive instead — and with no fork there is no remote to take an author from either, so `--author` is how one is set there.
 
