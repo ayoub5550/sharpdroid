@@ -8,6 +8,7 @@
 #include <FEXCore/Core/SignalDelegator.h>
 #include <FEXCore/Debug/InternalThreadState.h>
 #include <FEXCore/Utils/ArchHelpers/Arm64.h>
+#include <FEXCore/Utils/LongJump.h>
 #include <FEXCore/Utils/TypeDefines.h>
 
 #include <algorithm>
@@ -512,6 +513,38 @@ void GuestInterruptHandler(int Sig, siginfo_t*, void* UContext) {
 
 // --- the host fault handler --------------------------------------------------------------------
 
+// the FPSIMD record of an arm64 signal context, found by walking the record chain in
+// mcontext_t::__reserved (guest_signals.cpp has the read-only twin and the reasoning). the JIT
+// restart below has to *write* d8-d15 back, since they are callee-saved across the long jump.
+struct FPSimdRecord {
+  uint32_t Magic;
+  uint32_t Size;
+  uint32_t FPSR;
+  uint32_t FPCR;
+  __uint128_t VRegs[32];
+};
+
+static FPSimdRecord* FindMutableFPSimd(ucontext_t* Context) {
+  // the kernel header's FPSIMD_MAGIC, spelled out for the same reason guest_signals.cpp does: it is a
+  // macro there, and this must not depend on which asm/ header happened to be pulled in first.
+  constexpr uint32_t FPSimdMagic = 0x46508001;
+  size_t Offset = 0;
+  while (Offset + 8 <= sizeof(Context->uc_mcontext.__reserved)) {
+    auto* Record = reinterpret_cast<FPSimdRecord*>(&Context->uc_mcontext.__reserved[Offset]);
+    if (Record->Magic == FPSimdMagic) {
+      return Record;
+    }
+    if (Record->Size == 0) {
+      break;
+    }
+    Offset += Record->Size;
+  }
+  return nullptr;
+}
+
+///< how many compiles outgrew their scratch buffer and were restarted with more -- reported at exit.
+std::atomic<uint64_t> JITSpaceRestarts {0};
+
 void GuestFaultHandler(int Signal, siginfo_t* Info, void* UContext) {
   if (SignalTraceEnabled) {
     VMA::NoteSignal(Signal);
@@ -528,6 +561,29 @@ void GuestFaultHandler(int Signal, siginfo_t* Info, void* UContext) {
     Default.sa_handler = SIG_DFL;
     ::sigaction(Signal, &Default, nullptr);
     return;
+  }
+
+  // the JIT outgrowing its scratch buffer, which is not a fault either: it is FEXCore asking for a
+  // retry. a block is emitted into a temporary buffer sized from its IR (24 bytes per SSA node)
+  // with a PROT_NONE page after it; a block that expands further than that -- per-instruction
+  // validation under SMCChecks=full, long vector or x87 runs -- writes into the guard page, and the
+  // compile is meant to be restarted with twice the room. Arm64JITCore::CompileCode arms
+  // `RestartJump` for exactly this, and FEX's own frontend fires it from its SIGSEGV handler
+  // (SignalDelegator::HandleFrontendSIGSEGV). without the same here, a large enough block took the
+  // whole process down as a "host-side crash" inside the emitter. rewriting the context so that
+  // returning from the handler *is* the long jump keeps it out of FEXCore's C++ frames entirely.
+  if (Signal == SIGSEGV && Info->si_code == SEGV_ACCERR && T->Thread && T->Thread->JITGuardPage) {
+    const uint64_t Fault = Untag(Info->si_addr);
+    const uint64_t Guard = T->Thread->JITGuardPage;
+    if (Fault >= Guard && Fault < Guard + FEXCore::Utils::FEX_PAGE_SIZE) {
+      if (auto* FPSimd = FindMutableFPSimd(Context)) {
+        FEXCore::UncheckedLongJump::ManuallyLoadJumpBuf(T->Thread->RestartJump, T->Thread->JITGuardOverflowArgument,
+                                                        reinterpret_cast<uint64_t*>(&Context->uc_mcontext.regs[0]),
+                                                        FPSimd->VRegs, reinterpret_cast<uint64_t*>(&Context->uc_mcontext.pc));
+        JITSpaceRestarts.fetch_add(1, std::memory_order_relaxed);
+        return;
+      }
+    }
   }
 
   // the interrupt fault page, asked before anything else because it is not a fault at all -- it is
@@ -1381,6 +1437,10 @@ bool UnalignedHandlerIsAtomic() {
 
 uint64_t CallRetResetCount() {
   return CallRetResets.load(std::memory_order_relaxed);
+}
+
+uint64_t JITSpaceRestartCount() {
+  return JITSpaceRestarts.load(std::memory_order_relaxed);
 }
 
 AsyncSignalStats AsyncStats() {
