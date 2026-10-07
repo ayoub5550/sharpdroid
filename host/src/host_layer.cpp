@@ -180,6 +180,10 @@ void PrintRunSummary() {
     std::printf("[host-layer] %llu call-return shadow stack reset(s) after a guard-page fault\n",
                 static_cast<unsigned long long>(HostLayer::Threads::CallRetResetCount()));
   }
+  if (HostLayer::Threads::JITSpaceRestartCount()) {
+    std::printf("[host-layer] %llu compile(s) outgrew the JIT scratch buffer and were restarted with more\n",
+                static_cast<unsigned long long>(HostLayer::Threads::JITSpaceRestartCount()));
+  }
   if (HostLayer::Threads::UnalignedFixupCount()) {
     // the mode is named beside the count because the two are only meaningful together: the same
     // number of backpatches means something quite different when each one dropped the ordering

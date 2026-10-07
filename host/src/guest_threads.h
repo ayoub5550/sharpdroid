@@ -278,6 +278,10 @@ bool UnalignedHandlerIsAtomic();
 ///< host layer handling it mattered on any given run.
 uint64_t CallRetResetCount();
 
+///< how many compiles wrote into the JIT's scratch-buffer guard page and were restarted with a larger
+///< buffer -- FEXCore's NeedsLargerJITSpace retry, which the host fault handler drives.
+uint64_t JITSpaceRestartCount();
+
 ///< what the asynchronous signal path did. Deferred is the number worth watching: it counts the
 ///< times a thread was interrupted somewhere it could not be redirected from, which is the one
 ///< case where delivery waits for the target's next syscall rather than happening at once.
