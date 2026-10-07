@@ -60,10 +60,26 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
+    <!--
+      **a game, as far as the platform is concerned.** appCategory="game" is what the game manager
+      checks before it listens to anything this app says about itself (see GameStateReport), what
+      puts the app under the system's game mode and game dashboard, and what vendor game launchers and
+      boosters read when they decide what to treat as one.
+
+      the config beside it is what keeps that from costing anything. a package that is a game is one
+      the platform may intervene in - downscaling its window, capping its frame rate, swapping its GL
+      driver for ANGLE - and every one of those reaches the surface a guest presents into. they are
+      each turned off there, so being a game only ever adds what the device offers games.
+    -->
     <application
         android:label="@string/app_name"
         android:hardwareAccelerated="true"
+        android:appCategory="game"
         android:theme="@style/Theme.SharpDroid">
+
+        <meta-data
+            android:name="android.game_mode_config"
+            android:resource="@xml/game_mode_config" />
 
         <!-- the game list, and what the launcher icon opens. -->
         <activity

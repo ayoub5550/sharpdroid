@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  what the platform may do to this app once it is a game - see the manifest.
+
+  **none of its interventions.** downscaling would shrink the window the guest's swapchain is sized
+  from, behind the back of SHARPEMU_HOST_WINDOW_SIZE; a frame-rate override would pace a guest whose
+  frame pacing is already the emulator's; and ANGLE swaps the GL driver of a process whose only
+  graphics that matter go through vulkan. the two game modes are left unclaimed, so the platform's
+  own handling of them - and a vendor's - still applies.
+-->
+<game-mode-config xmlns:android="http://schemas.android.com/apk/res/android"
+    android:allowGameAngleDriver="false"
+    android:allowGameDownscaling="false"
+    android:allowGameFpsOverride="false" />

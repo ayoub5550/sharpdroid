@@ -298,6 +298,11 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     private Settings settings;
 
     private boolean started;
+    /**
+     * set once the guest has presented its first frame, so a resume knows whether it comes back to
+     * a game that is playing or to one still loading -- see {@link GameStateReport}.
+     */
+    private volatile boolean presented;
     /** set once the run is over, so {@code onDestroy} can tell an ending from an ordinary one. */
     private boolean ending;
     private int surfaceWidth;
@@ -794,6 +799,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         pausedScreen.show(surface, !(leaving && autoResume));
         overlay.setPaused(true);
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        GameStateReport.paused(this);
     }
 
     /** lets the game carry on from where it stopped. */
@@ -809,6 +815,11 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         pausedScreen.hide();
         overlay.setPaused(false);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        if (presented) {
+            GameStateReport.playing(this);
+        } else {
+            GameStateReport.loading(this);
+        }
     }
 
     /**
@@ -928,6 +939,10 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
      * the half that is the game's own.
      */
     private void onFirstFrame(long[] times) {
+        presented = true;
+        if (!paused) {
+            GameStateReport.playing(this);
+        }
         BootRecord.of(this).record(
                 buildKey,
                 fexPreset != null ? fexPreset : BootRecord.DEFAULT_PRESET,
@@ -1052,6 +1067,9 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
             // started now because this is when the game starts and because android allows one to
             // start only while the app is on screen. it ends with this process.
             GuestService.start(this);
+            // and the platform is told a game is loading, which is what a boot is from here to the
+            // first frame. see GameStateReport for what a device may do with it.
+            GameStateReport.loading(this);
             // endRun runs however runGuest leaves -- a payload that did not resolve, a game that is
             // not there, or a guest that returned. the one exit it never sees is exit_group, which
             // does not come back through nativeRun at all and does not need to: it has already
