@@ -5,11 +5,11 @@
 #   games/PPSA96660 games/doom-td doom-native/{doom-arm64,doom-x64,doom1.wad} (poc/ps5-doom/build.sh)
 # writes results/doom-summary.txt (and results/doom-*.log, results/doom-frames/).
 # the decision rule for the timedemo numbers is docs/dry-lab.md ("DOOM rule"), written before the run.
-# knobs (env): DOOM_REPEATS (2 interleaved rounds), DOOM_PLAY_SECONDS (60).
+# knobs (env): DOOM_REPEATS (2 interleaved rounds; 0 = only the play row), DOOM_PLAY_SECONDS (40).
 D=${BENCH_DIR:-/data/local/tmp/sharpdroid}
 cd $D || exit 1
 R=$D/results
-REPEATS=${DOOM_REPEATS:-2}; PLAY=${DOOM_PLAY_SECONDS:-60}
+REPEATS=${DOOM_REPEATS:-2}; PLAY=${DOOM_PLAY_SECONDS:-40}
 mkdir -p $R/doom-frames ./bench-tmp ./bench-home
 export LD_LIBRARY_PATH=.
 S=$R/doom-summary.txt
@@ -43,11 +43,25 @@ i=1; while [ $i -le $REPEATS ]; do
   step td-arm64-$i 240 $W/doom-arm64 -iwad $W/doom1.wad -timedemo demo1
   i=$((i + 1))
 done
-# the attract mode with the Android presenter (VK_EXT_headless_surface through the host layer's
-# Vulkan) and 60 Hz flip pacing: does it hold 60 fps, and what is on screen.
-step play $((PLAY + 30)) timeout $PLAY $HL --env SHARPEMU_HOST_WINDOW=android --env SHARPEMU_LOG_FPS=1 \
+# the attract mode through the real GPU: SharpEmu's Vulkan presenter (VK_EXT_headless_surface)
+# on the host layer's Vulkan thunk and the phone's driver. a shell process has no ANativeWindow,
+# so the thunk owns the swapchain (--vulkan-wsi headless) and --vulkan-dump writes the presented
+# frame (first, then every 300th) as PPM. 60 Hz flip pacing: does it hold 60 fps, what is on screen.
+step play $((PLAY + 30)) timeout $PLAY $HL --vulkan --vulkan-wsi headless --vulkan-size 1920x1080 \
+  --vulkan-dump $R/doom-frames/vk --env SHARPEMU_HOST_WINDOW=android \
+  --env SHARPEMU_HOST_WINDOW_SIZE=1920x1080 --env SHARPEMU_LOG_FPS=1 \
   --env SHARPEMU_DUMP_VIDEOOUT=1 --env SHARPEMU_DUMP_VIDEOOUT_DIR=$R/doom-frames \
-  --env SHARPEMU_DUMP_VIDEOOUT_EVERY=300 --env SHARPEMU_DUMP_VIDEOOUT_MAX=4 \
+  --env SHARPEMU_DUMP_VIDEOOUT_EVERY=600 --env SHARPEMU_DUMP_VIDEOOUT_MAX=2 \
   ./payload-doom/SharpEmu $D/games/PPSA96660/eboot.bin
+grep -i -e 'presenter' -e '\[vulkan\]' -e 'frames presented' -e 'swapchain' $R/doom-play.log | head -20 | sed 's/^/  play /' >> $S
+# a GPU the presenter refuses (the virtual device's llvmpipe lacks VK_KHR_push_descriptor) ends the
+# process; then the same attract mode without a presenter, so the frames and the fps still come back.
+if [ $rc -ne 124 ]; then
+  grep -e 'lacks a required' -e 'Process terminated' $R/doom-play.log | head -3 | sed 's/^/  play /' >> $S
+  step play-cpu $((PLAY + 30)) timeout $PLAY $HL --env SHARPEMU_LOG_FPS=1 \
+    --env SHARPEMU_DUMP_VIDEOOUT=1 --env SHARPEMU_DUMP_VIDEOOUT_DIR=$R/doom-frames \
+    --env SHARPEMU_DUMP_VIDEOOUT_EVERY=300 --env SHARPEMU_DUMP_VIDEOOUT_MAX=4 \
+    ./payload-doom/SharpEmu $D/games/PPSA96660/eboot.bin
+fi
 ls -la $R/doom-frames >> $S 2>&1
 echo DOOM-DONE >> $S
