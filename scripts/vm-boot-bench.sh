@@ -13,7 +13,7 @@
 RUNS=${BENCH_RUNS:-3}
 # BENCH_ONLY=baseline,diskcache-ram runs just those rows; unset runs them all.
 ONLY=$(echo "${BENCH_ONLY:-}" | tr , ' ')
-mkdir -p ./bench-tmp ./bench-cache
+mkdir -p ./bench-tmp ./bench-cache ./bench-out
 head -c 4096 /dev/zero > ./bench-tmp/eboot.bin
 
 now() { cut -d' ' -f1 /proc/uptime; }
@@ -38,6 +38,10 @@ one() {
     rc=$?
     end=$(now)
     echo "BENCH $label run=$i rc=$rc seconds=$(awk "BEGIN{print $end-$start}")"
+    # every run's log is kept on the run share, so a row can be read after the VM exits
+    cp ./bench-tmp/last.log "./bench-out/$label-$i.log"
+    # the outside clock, so a payload's own [BOOT] marks (SHARPEMU_BOOT_TRACE=1) line up with it
+    echo "[BENCH] start=$start end=$end" >> "./bench-out/$label-$i.log"
     i=$((i + 1))
   done
 }
@@ -46,6 +50,13 @@ P=./payload/SharpEmu
 E=./bench-tmp/eboot.bin
 
 one baseline            $P $E
+# every method the runtime jits, with its tier: what R2R did not cover, and why (docs/performance-roadmap.md)
+# where the seconds go: SharpEmu's own phase marks, against the uptime the row started at
+one boot-trace          --env SHARPEMU_BOOT_TRACE=1 $P $E
+# the HLE warm-up's own knobs (perf/android/lean-warmup); a payload without them ignores them
+one warmup-legacy       --env SHARPEMU_BOOT_TRACE=1 --env SHARPEMU_WARMUP=legacy --env SHARPEMU_AEROLIB_PRELOAD=0 $P $E
+one warmup-1thread      --env SHARPEMU_BOOT_TRACE=1 --env SHARPEMU_WARMUP_THREADS=1 $P $E
+one jit-summary         --env DOTNET_JitStdOutFile=$PWD/bench-out/jit-summary.txt --env DOTNET_JitDisasmSummary=1 $P $E
 one tieredpgo-off       --env DOTNET_TieredPGO=0 $P $E
 one gen0-64m            --env DOTNET_GCgen0size=0x4000000 $P $E
 one pgo-off+gen0-64m    --env DOTNET_TieredPGO=0 --env DOTNET_GCgen0size=0x4000000 $P $E
