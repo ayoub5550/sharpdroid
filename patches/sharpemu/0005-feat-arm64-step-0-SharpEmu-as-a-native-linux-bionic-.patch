@@ -1,0 +1,289 @@
+From c2378e10b7b7f4b5802bb9f71bc51cde0edb8168 Mon Sep 17 00:00:00 2001
+From: ayoub5550 <140963656+ayoub5550@users.noreply.github.com>
+Date: Thu, 8 Oct 2026 02:52:13 +0000
+Subject: [PATCH] feat(arm64): step 0 -- SharpEmu as a native
+ linux-bionic-arm64 process, null CPU backend
+
+Publishes with NativeAOT for linux-bionic-arm64 (NDK clang as the linker,
+PublishAotUsingRuntimePack) and runs everything up to the first guest instruction
+natively, with no x86-64 translator underneath:
+- HostPlatform: the POSIX platform on linux-arm64 (memory, threads, audio, input are
+  plain POSIX; the emitted-stub resolver is only reached from the x64 backend)
+- CpuDispatcher: refuses guest execution in a non-x64 process before any x86-64 stub
+  is emitted (the null backend)
+- CLI: warns instead of exiting on linux-arm64
+- lean warm-up: leaves the crypto/net-security framework initializers to first use on
+  a non-x64 host -- on Android they load the OpenSSL shim, which finds BoringSSL,
+  misses a2d_ASN1_OBJECT and aborts the process
+- SHARPEMU_BENCH=shader[:iterations[:instructions]]: an in-process timing of the
+  emulator's own CPU work (decode + SPIR-V translation of a synthetic Gen5 shader),
+  to compare a build under a translator with a native one
+---
+ src/SharpEmu.CLI/EmulatorBench.cs            | 136 +++++++++++++++++++
+ src/SharpEmu.CLI/Program.cs                  |  14 ++
+ src/SharpEmu.Core/Cpu/CpuDispatcher.cs       |  22 +++
+ src/SharpEmu.HLE/Host/HostPlatform.cs        |   9 ++
+ src/SharpEmu.HLE/ModuleManager.LeanWarmup.cs |  12 +-
+ 5 files changed, 192 insertions(+), 1 deletion(-)
+ create mode 100644 src/SharpEmu.CLI/EmulatorBench.cs
+
+diff --git a/src/SharpEmu.CLI/EmulatorBench.cs b/src/SharpEmu.CLI/EmulatorBench.cs
+new file mode 100644
+index 0000000..566c91e
+--- /dev/null
++++ b/src/SharpEmu.CLI/EmulatorBench.cs
+@@ -0,0 +1,136 @@
++// Copyright (C) 2026 SharpEmu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++using System.Buffers.Binary;
++using System.Diagnostics;
++using SharpEmu.HLE;
++using SharpEmu.ShaderCompiler;
++using SharpEmu.ShaderCompiler.Vulkan;
++
++namespace SharpEmu.CLI;
++
++// SHARPEMU_BENCH=shader[:iterations[:instructions]] -- a fixed piece of the emulator's own CPU work,
++// timed in-process, for comparing one build of SharpEmu against another on the same machine (an
++// x86-64 build under a translator against a native arm64 one). no guest and no GPU: a synthetic
++// Gen5 compute shader of N ALU instructions is decoded and translated to SPIR-V, which is the work
++// a game's first draw with a new shader puts on the render path.
++internal static class EmulatorBench
++{
++    private const ulong ShaderAddress = 0x1_0000_0000;
++    private const uint SEndpgm = 0xBF810000;
++
++    public static bool TryRun(out int exitCode)
++    {
++        exitCode = 0;
++        var spec = Environment.GetEnvironmentVariable("SHARPEMU_BENCH");
++        if (string.IsNullOrEmpty(spec) || !spec.StartsWith("shader", StringComparison.Ordinal))
++        {
++            return false;
++        }
++
++        var parts = spec.Split(':');
++        var iterations = parts.Length > 1 && int.TryParse(parts[1], out var i) ? i : 50;
++        var length = parts.Length > 2 && int.TryParse(parts[2], out var n) ? n : 2000;
++        var words = BuildProgram(length);
++        var memory = new FlatMemory(ShaderAddress, words.Length * sizeof(uint));
++        var bytes = new byte[words.Length * sizeof(uint)];
++        for (var index = 0; index < words.Length; index++)
++        {
++            BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(index * sizeof(uint)), words[index]);
++        }
++
++        memory.TryWrite(ShaderAddress, bytes);
++        var samples = new double[iterations];
++        var spirvBytes = 0;
++        var total = Stopwatch.StartNew();
++        for (var iteration = 0; iteration < iterations; iteration++)
++        {
++            var clock = Stopwatch.StartNew();
++            var context = new CpuContext(memory, Generation.Gen5);
++            if (!Gen5ShaderTranslator.TryDecodeProgram(context, ShaderAddress, out var program, out var error))
++            {
++                Console.Error.WriteLine($"[BENCH] decode failed: {error}");
++                exitCode = 4;
++                return true;
++            }
++
++            var state = new Gen5ShaderState(program, [], null);
++            var scalars = new uint[256];
++            var evaluation = new Gen5ShaderEvaluation(scalars, scalars, [], []);
++            if (!Gen5SpirvTranslator.TryCompileComputeShader(state, evaluation, 64, 1, 1, out var shader, out error))
++            {
++                Console.Error.WriteLine($"[BENCH] compile failed: {error}");
++                exitCode = 4;
++                return true;
++            }
++
++            spirvBytes = shader.Spirv.Length;
++            samples[iteration] = clock.Elapsed.TotalMilliseconds;
++        }
++
++        var sorted = samples.OrderBy(sample => sample).ToArray();
++        Console.Error.WriteLine(
++            $"[BENCH] shader instructions={length} iterations={iterations} spirv={spirvBytes}B " +
++            $"first={samples[0]:F2}ms median={sorted[sorted.Length / 2]:F2}ms min={sorted[0]:F2}ms " +
++            $"total={total.Elapsed.TotalMilliseconds:F0}ms arch={System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture}");
++        return true;
++    }
++
++    // A dependency chain over v0..v47 of the six f16 VOP2 forms the shader compiler's own tests
++    // decode (v_add/sub/subrev/mul/max/min_f16), so nothing about the program is unusual.
++    private static uint[] BuildProgram(int length)
++    {
++        uint[] ops = [0x32, 0x33, 0x34, 0x35, 0x39, 0x3A];
++        var words = new uint[length + 1];
++        for (var index = 0; index < length; index++)
++        {
++            var op = ops[index % ops.Length];
++            var dst = (uint)((index * 7 + 3) % 48);
++            var src0 = (uint)((index * 5 + 1) % 48);
++            var src1 = (uint)((index * 3 + 2) % 48);
++            words[index] = (op << 25) | (dst << 17) | (src1 << 9) | (256u + src0);
++        }
++
++        words[length] = SEndpgm;
++        return words;
++    }
++
++    private sealed class FlatMemory(ulong baseAddress, int size) : ICpuMemory
++    {
++        private readonly byte[] _storage = new byte[size];
++
++        public bool TryRead(ulong virtualAddress, Span<byte> destination)
++        {
++            if (!TryResolve(virtualAddress, destination.Length, out var offset))
++            {
++                return false;
++            }
++
++            _storage.AsSpan(offset, destination.Length).CopyTo(destination);
++            return true;
++        }
++
++        public bool TryWrite(ulong virtualAddress, ReadOnlySpan<byte> source)
++        {
++            if (!TryResolve(virtualAddress, source.Length, out var offset))
++            {
++                return false;
++            }
++
++            source.CopyTo(_storage.AsSpan(offset, source.Length));
++            return true;
++        }
++
++        private bool TryResolve(ulong address, int length, out int offset)
++        {
++            offset = 0;
++            if (address < baseAddress || address - baseAddress > int.MaxValue)
++            {
++                return false;
++            }
++
++            offset = (int)(address - baseAddress);
++            return offset <= _storage.Length - length;
++        }
++    }
++}
+diff --git a/src/SharpEmu.CLI/Program.cs b/src/SharpEmu.CLI/Program.cs
+index 98e1639..ace8e2f 100644
+--- a/src/SharpEmu.CLI/Program.cs
++++ b/src/SharpEmu.CLI/Program.cs
+@@ -110,6 +110,11 @@ internal static partial class Program
+         }
+ #endif
+ 
++        if (SharpEmu.CLI.EmulatorBench.TryRun(out var benchExitCode))
++        {
++            return benchExitCode;
++        }
++
+         args = NormalizeInternalArguments(args, out var isMitigatedChild);
+ 
+         if (args.Length == 0)
+@@ -188,6 +193,15 @@ internal static partial class Program
+             return true;
+         }
+ 
++        // a native linux-arm64 build (sharpdroid's step 0 toward an arm64 SharpEmu) runs everything
++        // up to the first guest instruction and stops there: CpuDispatcher has no backend for it.
++        if (OperatingSystem.IsLinux() && RuntimeInformation.ProcessArchitecture == Architecture.Arm64)
++        {
++            Console.Error.WriteLine(
++                "[LOADER][WARN] native arm64 process: no CPU backend yet, guest execution will be refused.");
++            return true;
++        }
++
+         Console.Error.WriteLine(
+             $"[LOADER][ERROR] Unsupported process architecture " +
+             $"{RuntimeInformation.ProcessArchitecture}: guest code executes " +
+diff --git a/src/SharpEmu.Core/Cpu/CpuDispatcher.cs b/src/SharpEmu.Core/Cpu/CpuDispatcher.cs
+index 069d348..b1b1cd2 100644
+--- a/src/SharpEmu.Core/Cpu/CpuDispatcher.cs
++++ b/src/SharpEmu.Core/Cpu/CpuDispatcher.cs
+@@ -272,6 +272,28 @@ public sealed class CpuDispatcher : ICpuDispatcher, IDisposable
+                 CpuExitReason.NativeBackendUnavailable);
+         }
+ 
++        // A native arm64 process has no CPU backend yet: DirectExecutionBackend runs guest x86-64
++        // in place and emits x86-64 stubs. Until a translating backend exists (sharpdroid's
++        // docs/native-arm64-backend.md), everything before the first guest instruction runs and
++        // this is where it stops -- the "null backend" of that document's step 0.
++        if (System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture != System.Runtime.InteropServices.Architecture.X64)
++        {
++            LastMilestoneLog = string.Concat(
++                entryFrameDiagnostic,
++                Environment.NewLine,
++                "CpuEngine: none (non-x64 process)");
++            LastNotImplementedInfo = new CpuNotImplementedInfo(
++                CpuNotImplementedSource.NativeBackend,
++                entryPoint,
++                nid: null,
++                exportName: "cpu_backend_unavailable",
++                libraryName: System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture.ToString(),
++                detail: "No CPU backend for a non-x64 process yet.");
++            return FailEarly(
++                OrbisGen2Result.ORBIS_GEN2_ERROR_NOT_IMPLEMENTED,
++                CpuExitReason.NativeBackendUnavailable);
++        }
++
+         LastMilestoneLog = string.Concat(
+             entryFrameDiagnostic,
+             Environment.NewLine,
+diff --git a/src/SharpEmu.HLE/Host/HostPlatform.cs b/src/SharpEmu.HLE/Host/HostPlatform.cs
+index 30503bb..2ff13d7 100644
+--- a/src/SharpEmu.HLE/Host/HostPlatform.cs
++++ b/src/SharpEmu.HLE/Host/HostPlatform.cs
+@@ -35,6 +35,15 @@ public static class HostPlatform
+             return new PosixHostPlatform();
+         }
+ 
++        // A native linux-arm64 process (sharpdroid's step 0 toward an arm64 SharpEmu): the host
++        // memory, threading, audio and input services are plain POSIX and work as they are. The
++        // CPU dispatcher refuses guest execution there before any x86-64 stub is emitted, and the
++        // emitted-stub symbol resolver is only reached from that backend.
++        if (OperatingSystem.IsLinux() && RuntimeInformation.ProcessArchitecture == Architecture.Arm64)
++        {
++            return new PosixHostPlatform();
++        }
++
+         throw new PlatformNotSupportedException(
+             "SharpEmu native guest execution requires an x86-64 process on Windows, Linux, or macOS. " +
+             "On Apple Silicon, use the osx-x64 build under Rosetta 2.");
+diff --git a/src/SharpEmu.HLE/ModuleManager.LeanWarmup.cs b/src/SharpEmu.HLE/ModuleManager.LeanWarmup.cs
+index 442e0ac..232c095 100644
+--- a/src/SharpEmu.HLE/ModuleManager.LeanWarmup.cs
++++ b/src/SharpEmu.HLE/ModuleManager.LeanWarmup.cs
+@@ -58,7 +58,7 @@ public sealed partial class ModuleManager
+         foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
+         {
+             var name = assembly.GetName().Name;
+-            if (name is null || !IsFrameworkAssembly(name))
++            if (name is null || !IsFrameworkAssembly(name) || SkipOnThisHost(name))
+             {
+                 continue;
+             }
+@@ -307,6 +307,16 @@ public sealed partial class ModuleManager
+         return (prepared, failed);
+     }
+ 
++    // On a native arm64 Android process the framework's crypto initializers load the OpenSSL shim,
++    // which finds the system's BoringSSL libssl.so, misses a2d_ASN1_OBJECT and aborts the process
++    // (a fail-fast, not an exception). They are left to first use there; SharpEmu's own hashing
++    // (SHA-1 NIDs, SHA-256 SPIR-V digests) needs a bundled OpenSSL 3 or managed hashes on that host
++    // anyway, which is a porting item of its own (docs/native-arm64-backend.md).
++    private static bool SkipOnThisHost(string assemblyName) =>
++        System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture != System.Runtime.InteropServices.Architecture.X64 &&
++        (assemblyName.StartsWith("System.Security.Cryptography", StringComparison.Ordinal) ||
++         assemblyName.StartsWith("System.Net.Security", StringComparison.Ordinal));
++
+     // Under SHARPEMU_BOOT_TRACE=1, which initializer threw and why: a type whose .cctor throws here
+     // throws TypeInitializationException at every later use, so the list is the triage list.
+     private static void ReportThrow(Assembly assembly, string type, Exception ex)
+-- 
+2.39.5
+
