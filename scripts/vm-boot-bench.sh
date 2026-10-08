@@ -20,10 +20,27 @@ now() { cut -d' ' -f1 /proc/uptime; }
 
 # the base environment is the launcher's own, minus what needs a window, a pad or a speaker.
 base() {
+  if [ -n "$BENCH_NATIVE" ]; then native "$@"; return; fi
   ./sharpdroid-host-layer --libs ./guest-libs --tmp ./bench-tmp \
     --env DOTNET_EnableWriteXorExecute=0 --env SHARPEMU_HOST_WINDOW=android \
     --env SHARPEMU_HOST_AUDIO=android --env SHARPEMU_HOST_INPUT=android \
     "$@"
+}
+
+# BENCH_NATIVE=1: the payload is a native arm64 SharpEmu (NativeAOT linux-bionic-arm64, the step 0
+# of docs/native-arm64-backend.md) and runs as itself, with no host layer and no FEX. the rows'
+# --env pairs become its environment; --fex options have nothing to apply to and are dropped.
+native() {
+  envs=""
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --env) envs="$envs $2"; shift 2 ;;
+      --fex) shift 2 ;;
+      *) break ;;
+    esac
+  done
+  env DOTNET_EnableWriteXorExecute=0 SHARPEMU_HOST_WINDOW=android SHARPEMU_HOST_AUDIO=android \
+    SHARPEMU_HOST_INPUT=android TMPDIR=$PWD/bench-tmp $envs "$@"
 }
 
 one() {
@@ -56,6 +73,9 @@ one boot-trace          --env SHARPEMU_BOOT_TRACE=1 $P $E
 # the HLE warm-up's own knobs (perf/android/lean-warmup); a payload without them ignores them
 one warmup-legacy       --env SHARPEMU_BOOT_TRACE=1 --env SHARPEMU_WARMUP=legacy --env SHARPEMU_AEROLIB_PRELOAD=0 $P $E
 one warmup-1thread      --env SHARPEMU_BOOT_TRACE=1 --env SHARPEMU_WARMUP_THREADS=1 $P $E
+# the emulator's own CPU work, no guest: decode + SPIR-V translation of a synthetic 1,000-instruction
+# Gen5 shader, 20 times, timed inside the process (a payload with SHARPEMU_BENCH; others ignore it)
+one shader-bench        --env SHARPEMU_BENCH=shader:20:1000 $P $E
 one jit-summary         --env DOTNET_JitStdOutFile=$PWD/bench-out/jit-summary.txt --env DOTNET_JitDisasmSummary=1 $P $E
 one tieredpgo-off       --env DOTNET_TieredPGO=0 $P $E
 one gen0-64m            --env DOTNET_GCgen0size=0x4000000 $P $E

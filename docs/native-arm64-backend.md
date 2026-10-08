@@ -1,6 +1,6 @@
 # a native arm64 SharpEmu with FEXCore as a guest-only CPU backend
 
-status: design and cost estimate, nothing built yet (2026-10-08). it is roadmap item #15 in [`performance-roadmap.md`](performance-roadmap.md). **[measured]**, **[source]** and **[estimate]** mean what they mean in that document: an estimate is a reason to measure, not a result.
+status: design and cost estimate; **step 0 built and measured on a phone** (2026-10-08, *step 0: measured* below). it is roadmap item #15 in [`performance-roadmap.md`](performance-roadmap.md). **[measured]**, **[source]** and **[estimate]** mean what they mean in that document: an estimate is a reason to measure, not a result.
 
 ## executive summary
 
@@ -8,7 +8,41 @@ status: design and cost estimate, nothing built yet (2026-10-08). it is roadmap 
 - **the alternative** is to build SharpEmu as a native arm64 .NET app (NativeAOT `linux-bionic-arm64`) and add a `FexCpuBackend` that uses FEXCore as a library to run **only** guest x86-64. this is the same split Arm64EC/`arm64ecfex` makes on Windows. it is feasible because of the property the host layer already depends on: **a guest pointer is a host pointer**. the C# HLE dereferences guest addresses directly (`DispatchImport` reads `*(ulong*)argPackPtr`), and with FEXCore in-process that stays true, so the ~111K lines in `SharpEmu.HLE` + `SharpEmu.Libs` (plus the 23K-line shader compiler) do not change.
 - **FEXCore already exposes most of what is needed**: `CreateThread`/`ExecuteThread`, `SyscallHandler` (full guest state spilled, the handler may rewrite RIP), `HandleCallback` + `CALLBACKRET` for host→guest→host nesting, `QueryGuestExecutableRange`, `LookupExecutableFileSection` for the DiskCache, `InvalidateCodeBuffersCodeRange`, and `RestoreRIPFromHostPC`. the one recommended patch is a **non-clobbering "HLE call" opcode**. without it a proof of concept can use the `syscall`-with-a-magic-number boundary the Vulkan thunk already uses.
 - **the expected gain is large on the emulator side and zero on the PS5 side** (all estimates): boot to guest entry **about 2.5–5× faster cold and 1.7–3× warm**; CPU-bound frames **about 1.1–1.4×**, because the guest code is still translated, TSO and AVX2 included; frames limited by SharpEmu's own render, command or shader-translation threads **about 1.7–2.5×**. it does not change the GTA 6 conclusion, which is set by the GPU and memory bandwidth.
-- **cost**: about **26–40 engineer-weeks**, high risk, and a lasting fork from upstream's x64-only `DirectExecutionBackend`. **the proof of concept is about 2–3 weeks**, and there is a cheaper step 0 (about 1–2 weeks): boot the emulator side natively in the arm64 VM with no guest at all, and compare it against the 91.6 s VM boot-bench baseline.
+- **cost**: about **26–40 engineer-weeks**, high risk, and a lasting fork from upstream's x64-only `DirectExecutionBackend`. **the proof of concept is about 2–3 weeks**. step 0 — the emulator side native with no guest — is done and measured (below): it took hours rather than the estimated 1–2 weeks, because the NativeAOT payload already existed.
+
+## step 0: measured
+
+**built** (fork branch `perf/android/arm64-step0`, patch `0005` in `patches/sharpemu/`): SharpEmu published with NativeAOT for `linux-bionic-arm64` — a 36 MB arm64 executable whose interpreter is `/system/bin/linker64` and whose only dependencies are bionic's `libc`, `libm`, `libdl`, `liblog` and `libz`. it runs with no host layer and no FEX, and does everything up to the first guest instruction: the export registry, the HLE warm-up, the NID catalog, guest memory, the loader, and the refusal of the fake eboot (rc 3, the same as every other payload). the changes it took are small: `HostPlatform` accepts linux-arm64 (its services are plain POSIX), `CpuDispatcher` refuses guest execution in a non-x64 process before any x86-64 stub is emitted (the null backend), the CLI warns instead of exiting, and the warm-up leaves the crypto initializers to first use (below).
+
+```
+dotnet publish src/SharpEmu.CLI/SharpEmu.CLI.csproj -c Release -r linux-bionic-arm64 \
+  -p:SharpEmuHeadless=true -p:SharpEmuNativeAot=true -p:PublishAotUsingRuntimePack=true \
+  -p:DisableUnsupportedError=true -p:CppCompilerAndLinker=$NDK_BIN/aarch64-linux-android30-clang \
+  -p:ObjCopyName=$NDK_BIN/llvm-objcopy
+```
+
+**measured** — the same source built twice, linux-x64 NativeAOT under the host layer and FEX against linux-bionic-arm64 NativeAOT run directly; `SHARPEMU_BENCH=shader` times decode + SPIR-V translation of a synthetic Gen5 compute shader inside the process. Xiaomi 14 (Snapdragon 8 Gen 3, Android 15), Firebase Test Lab, 6 interleaved rounds:
+
+| | x86-64 under FEX | native arm64 | ratio |
+| --- | --- | --- | --- |
+| boot to the refusal, cold | 0.87 s | **0.31 s** | **2.9×** |
+| — the same, FEX with a warm DiskCache | 0.63 s | 0.31 s | 2.1× |
+| — inside the process, `main` → refusal | 556 ms | 157 ms | 3.5× |
+| — of that, registry + warm-up (`main` → HLE initialisers) | 534 ms | 74 ms | 7.2× |
+| first translation of a 1,000-instruction shader (cold code) | 93 ms | 24 ms | **3.9×** |
+| — FEX with a warm DiskCache | 41 ms | 24 ms | 1.7× |
+| first translation of a 250-instruction shader | 26.4 ms | 6.5 ms | 4.1× |
+| steady state, 250 instructions (median of 60) | 7.0 ms | 4.1 ms | 1.7× |
+| steady state, 1,000 instructions (median of 30; 2.7 MB of SPIR-V each, allocation-bound) | 32.3 ms | 27.9 ms | 1.16× |
+
+Test Lab's arm64 Android 15 emulator (`MediumPhone.arm`) agrees: boot 0.82 → 0.16 s, first shader 82–111 → 17–39 ms.
+
+what it says: **the largest losses under FEX are cold code** — boot and the first run of any path, which is exactly when a game hitches (a new shader, a new menu, a new area). there native is 3–7× faster, and a warm DiskCache only closes part of it. **hot, compute-bound emulator code gains about 1.7×, allocation- and memory-bound code very little**, because FEX translates a hot loop well and memory is memory. that lands inside section 3's estimate (1.7–2.9× on the emulator side) with the shape it predicted, and it is now measured rather than estimated. it says nothing about PS5 code, which stays translated in this design.
+
+**what step 0 found that the design had not:**
+- **.NET crypto on Android.** the framework's crypto initializers load the OpenSSL shim, which finds the system's BoringSSL `libssl.so`, misses `a2d_ASN1_OBJECT` and **aborts the process** (a fail-fast, not an exception). the warm-up skips them on a non-x64 host; SharpEmu's own hashing (SHA-1 NIDs, SHA-256 SPIR-V digests, `RandomExports`) needs a bundled OpenSSL 3 or managed implementations before guest code can run natively.
+- **the NID catalog becomes the critical path**: under FEX the warm-up hides its 154k-entry parse; natively the warm-up takes 74 ms and the boot then waits about 80 ms for the catalog. a precomputed hash table in the binary (or a lazy lookup) removes it.
+- **the VM is the wrong instrument for this ratio.** under TCG the native build boots 2× faster than FEX (12.7 s against 25.6 s) but translates shaders *slower* (about 1.0 s against 0.57 s a shader) — qemu's cost per arm64 instruction is not a CPU's. the VM stays the correctness check; native-against-FEX ratios come from Test Lab.
 
 ## 1. how guest code runs today (`DirectExecutionBackend`, x64 only)
 
