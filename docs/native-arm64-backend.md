@@ -1,6 +1,6 @@
 # a native arm64 SharpEmu with FEXCore as a guest-only CPU backend
 
-status: design and cost estimate; **step 0 built and measured on a phone** (2026-10-08, *step 0: measured* below). it is roadmap item #15 in [`performance-roadmap.md`](performance-roadmap.md). **[measured]**, **[source]** and **[estimate]** mean what they mean in that document: an estimate is a reason to measure, not a result.
+status: design and cost estimate; **step 0 built and measured on a phone** (2026-10-08, *step 0: measured* below); **the proof of concept built and passing in the VM** (*the proof of concept: built* below). it is roadmap item #15 in [`performance-roadmap.md`](performance-roadmap.md). **[measured]**, **[source]** and **[estimate]** mean what they mean in that document: an estimate is a reason to measure, not a result.
 
 ## executive summary
 
@@ -43,6 +43,55 @@ what it says: **the largest losses under FEX are cold code** — boot and the fi
 - **.NET crypto on Android.** the framework's crypto initializers load the OpenSSL shim, which finds the system's BoringSSL `libssl.so`, misses `a2d_ASN1_OBJECT` and **aborts the process** (a fail-fast, not an exception). the warm-up skips them on a non-x64 host; SharpEmu's own hashing (SHA-1 NIDs, SHA-256 SPIR-V digests, `RandomExports`) needs a bundled OpenSSL 3 or managed implementations before guest code can run natively.
 - **the NID catalog becomes the critical path**: under FEX the warm-up hides its 154k-entry parse; natively the warm-up takes 74 ms and the boot then waits about 80 ms for the catalog. a precomputed hash table in the binary (or a lazy lookup) removes it.
 - **the VM is the wrong instrument for this ratio.** under TCG the native build boots 2× faster than FEX (12.7 s against 25.6 s) but translates shaders *slower* (about 1.0 s against 0.57 s a shader) — qemu's cost per arm64 instruction is not a CPU's. the VM stays the correctness check; native-against-FEX ratios come from Test Lab.
+
+## the proof of concept: built
+
+**built** (this repo, `host/sharpfex/` and `poc/fexpoc/`, `poc/fexpoc/build.sh`):
+
+- **`libsharpfex.so`**: 3.2 MB stripped. It depends only on bionic's `libc`, `libm`, `libdl` and `liblog`, with libc++ linked statically. Its C ABI is `sharpfex.h` (16 `sfx_*` functions):
+  - one FEXCore context; guest threads bound to the host threads that create them;
+  - HLE imports through a 13-byte slot: `mov [rsp-8],rcx; mov [rsp-16],r11; syscall; ret`. The slot is identified by the address of its `syscall`, so rax survives too;
+  - host→guest calls through `HandleCallback` + `CALLBACKRET`, nested inside imports;
+  - context transfer by rewriting rip/rsp;
+  - a per-thread escape hatch (`sigsetjmp`) that parks a guest thread inside an import and resumes it with the next `sfx_run`;
+  - exec ranges, plus the JIT guard-page restart and the unaligned-atomic backpatch lifted from `guest_threads.cpp`;
+  - a SIGSEGV/SIGBUS handler that chains everything else to the handler .NET installed before it;
+  - **slot functions** (`sfx_set_slot_fn`): leaf imports called directly on FEX's register array, with nothing copied.
+- **`FexPoc`**: a NativeAOT console app (1.3 MB) that maps a hand-assembled x86-64 blob (`guest.S`, 1,888 bytes of code) at `0x8_0000_0000`. It runs the same guest code and the same C# handler under two models:
+  - **fex**: a native arm64 process, guest through libsharpfex;
+  - **x64**: today's design, SharpEmu's arg-pack trampolines, native on x86 or translated whole by the host layer on arm64.
+
+**contract: all checks pass** in the VM (FEX-2609, 2026-10-08) **[measured]**:
+
+| check | result |
+| --- | --- |
+| six int args + a stack arg + xmm0, and a guest string read by C# **through the guest pointer** | OK |
+| rbx rbp r12–r15 rcx r10 r11 survive an import (rcx/r11 despite `syscall`) | OK |
+| guest → HLE → guest callback → HLE → guest | OK |
+| HLE rewrites rip/rsp (longjmp / fiber shape) | OK |
+| a guest thread parks 4× inside an import and resumes each time | OK |
+| 4 guest threads × 10⁶ imports + 10³ callbacks each, while the main thread forces 3,997 GCs (249 full, compacting) | OK, exact results |
+| an unaligned `lock add` across a 16-byte boundary (backpatched) | OK |
+| .NET's own null dereference still becomes `NullReferenceException` | OK |
+
+**open in the PoC, on purpose:** blocking inside a *nested* host→guest call is refused (`-EDEADLK`); that needs one escape hatch per nesting depth. SMC write protection is not implemented (mtrack with a no-op mark, so `sfx_invalidate` is manual). There are no guest signals.
+
+**VM timings are not results.** The table is TCG, ns per import, median of 3 after a warm-up. It is here only to say what to look for on the phone:
+
+| bench | fex model | x64 model (host layer) |
+| --- | --- | --- |
+| `hle_add`: guest loop of imports, C# `a+b` | 2,070–3,580, once 21,950 | 690–730 |
+| `hle_add_direct`: slot function in C#, no copy | 1,800–1,860 | — |
+| `hle_add_builtin`: slot function in C++ (FEX's boundary alone) | **437–444** | — |
+| `hle_callback`: guest → HLE → guest → HLE → guest | 7,960–13,240 | 930–1,230 |
+| `guest_compute`: no imports (the control) | 7.1–7.5 | 7.1–7.8 |
+
+What the VM does show:
+- **the guest side costs the same in both models** (the control);
+- FEX's own boundary is stable at ~440 ns of TCG time;
+- the managed transition dominates the rest. Identical processes varied 2.1–22 µs on that path, so TCG's cost for that path depends on where things land in memory.
+
+That is the case [`dry-lab.md`](dry-lab.md) rule 5 is for. The decision rule for the phone is written there, before the run.
 
 ## 1. how guest code runs today (`DirectExecutionBackend`, x64 only)
 

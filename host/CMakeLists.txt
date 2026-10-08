@@ -304,3 +304,23 @@ target_link_options(sharpdroid-host-layer-jni PRIVATE "-Wl,-u,Java_com_mircowuff
 # name at load time, nothing in the link graph refers to it either, and dropping it costs no error
 # at all -- the library loads, and the file layer simply never has a class to call.
 target_link_options(sharpdroid-host-layer-jni PRIVATE "-Wl,-u,JNI_OnLoad")
+
+# --- libsharpfex: FEXCore as a guest-only CPU backend ----------------------------------------
+#
+# docs/native-arm64-backend.md: a native arm64 SharpEmu loads this and hands it only the PS5's
+# x86-64, instead of the host layer translating the whole .NET process. a proof of concept today
+# (poc/fexpoc drives it). it shares the host-feature probe and FEXCore's thread factory with the
+# host layer and nothing else -- no syscall surface, ELF loader, guest signals or thunks.
+#
+# c++ is linked statically so the one file is all a .NET process has to carry.
+add_library(sharpfex SHARED
+  "${CMAKE_CURRENT_SOURCE_DIR}/sharpfex/sharpfex.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/host_features.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/fex_threads.cpp")
+target_include_directories(sharpfex PRIVATE
+  "${FEX_ROOT}/FEXCore/include"
+  "${CMAKE_BINARY_DIR}/include"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(sharpfex PRIVATE FEXCore JemallocDummy log)
+target_link_options(sharpfex PRIVATE "-static-libstdc++" "-Wl,--exclude-libs,ALL" "-Wl,--gc-sections")
+set_target_properties(sharpfex PROPERTIES EXCLUDE_FROM_ALL TRUE C_VISIBILITY_PRESET default)

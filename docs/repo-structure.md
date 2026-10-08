@@ -40,7 +40,9 @@ a repository boundary there would buy an independent version number nobody would
 │   ├── frontends.md          starting a game from another app: the component, the two forms
 │   ├── scripts.md            every script, and the arguments worth knowing
 │   ├── vm.md                 the arm64 android VM on an x86-64 box: how it is built, run, and what it can measure
-│   └── performance-roadmap.md where the speed goes, what is measured, the decisions ranked
+│   ├── performance-roadmap.md where the speed goes, what is measured, the decisions ranked
+│   ├── native-arm64-backend.md SharpEmu as native arm64, FEXCore only for PS5 code: design, step 0, the PoC
+│   └── dry-lab.md            how experiments are decided: cheap compute first, one real run, rules written before
 │
 ├── external/                 three pinned submodules
 │   ├── FEX/                  FEXCore, and sixteen submodules of its own. the checkout is never modified
@@ -55,6 +57,7 @@ a repository boundary there would buy an independent version number nobody would
 │   ├── regression.sh         the on-device regression modes
 │   ├── src/                  ELF loader, syscall dispatch, signal delegation, VMA/SMC tracking,
 │   │                         and the file layer that answers a granted game directory
+│   ├── sharpfex/             libsharpfex.so: FEXCore as a guest-only backend for a native process (PoC)
 │   ├── thunks/vulkan/        the generated halves, and the host probe
 │   └── thunks/audio/         the generated halves
 │
@@ -71,6 +74,7 @@ a repository boundary there would buy an independent version number nobody would
 │       └── res/
 │
 ├── guests/                   x86-64 test guests the host layer is exercised against
+├── poc/fexpoc/               the FexCpuBackend proof of concept: guest blob, NativeAOT app, VM and device scripts
 ├── guest-libs/               the x86-64 shared objects the guest's linker searches
 ├── scripts/                  Python 3, standard library only
 │   ├── run.py                build, stage and launch on a connected device. one command
