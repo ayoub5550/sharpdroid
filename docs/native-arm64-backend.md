@@ -48,7 +48,7 @@ what it says: **the largest losses under FEX are cold code** — boot and the fi
 
 **built** (this repo, `host/sharpfex/` and `poc/fexpoc/`, `poc/fexpoc/build.sh`):
 
-- **`libsharpfex.so`**: 3.2 MB stripped. It depends only on bionic's `libc`, `libm`, `libdl` and `liblog`, with libc++ linked statically. Its C ABI is `sharpfex.h` (16 `sfx_*` functions):
+- **`libsharpfex.so`**: 3.2 MB stripped. It depends only on bionic's `libc`, `libm`, `libdl` and `liblog`, with libc++ linked statically. Its C ABI is `sharpfex.h` (18 `sfx_*` functions since the callback fast path):
   - one FEXCore context; guest threads bound to the host threads that create them;
   - HLE imports through a 13-byte slot: `mov [rsp-8],rcx; mov [rsp-16],r11; syscall; ret`. The slot is identified by the address of its `syscall`, so rax survives too;
   - host→guest calls through `HandleCallback` + `CALLBACKRET`, nested inside imports;
@@ -112,6 +112,45 @@ The decision taken under the rule: **proceed**, with the next work being:
 1. a callback re-entry that skips the dispatcher prologue;
 2. `HLECALL`;
 3. *h* measured as body time on a real game.
+
+### callback fast path (design; built, not yet measured on a phone)
+
+**What a host→guest call costs today** (`sfx.Callback=legacy`, the default) **[source]**: `sfx_call` saves the light (or full) state, sets the arguments, and calls FEX's `HandleCallback`. That jumps to the dispatcher's callback entry (`Dispatcher.cpp`, `CallbackPtr`), which:
+1. pushes the host callee-saved registers;
+2. bumps `SignalHandlerRefCounter`;
+3. writes `ThunkCallbackRet` to the guest stack;
+4. fills every static register (`FillStaticRegs`: GPRs, XMM, NZCV, FPCR, SVE predicates);
+5. pushes a **dummy** call-return entry `{0, 0}`;
+6. branches to the dispatcher's loop top, which does the L2 page-table lookup.
+
+When the callee returns, its `ret` cannot match the dummy entry. It falls back to the L1 lookup of the `CALLBACKRET` address, an indirect `ret`, and the compiled `0f 3e` block (`BranchOps.cpp`, `CallbackReturn`), which spills everything, fixes rsp, drops the ref count, pops the callee-saved registers and returns to the shim.
+
+**The fast path** (`sfx.Callback=fast`, `FastEntry` in `sharpfex.cpp`) keeps the contract and the `sfx.CallSave=light|full` save/restore exactly, and changes how the shim enters and leaves the guest:
+- **its own entry**, emitted once at `sfx_init` with FEXCore's own `Arm64Emitter`. Reusing `PushCalleeSavedRegisters`, `FillStaticRegs` and `SpillStaticRegs` keeps the register map, AFP and SVE handling identical to the JIT's, across FEX bumps. The shim writes the return address and rip itself; the entry does steps 1, 2 and 4.
+- **a real call-return entry** `{CALLBACKRET's guest address, Landing}` instead of the dummy. The callee's `ret` matches it and lands directly in the shim's `Landing`, which spills, drops the ref count and returns. There is no miss, no lookup of the return address, and no `0f 3e` block.
+- **the target is looked up the way an indirect branch is**: the thread's L1 cache, falling back to the dispatcher's loop top, which compiles on a miss.
+- **bookkeeping**: callbacks are counted per thread and flushed in batches, like imports, with no shared atomic per call. Nested calls skip the TLS store, because the run or call around them has already made the thread current.
+- **the fallback is the same exit.** If the call-return stack is reset under the callee (an invalidation does that), its `ret` reaches `CALLBACKRET` as before. That block unwinds the frame the fast entry pushed, because the entry uses FEX's own push layout. `sfx.Callback=fast-fallback` forces that exit on every return, to test it (and to split the gain between entry and exit).
+
+**What it cannot remove**, and what the phone run has to size **[estimate, to be measured]**:
+- the callee-saved push/pop;
+- the full static-register fill and spill;
+- with FEAT_AFP, **two FPCR writes** per transition (the host must run with NEP/AH/FIZ clear);
+- the managed transitions on both sides.
+
+New rows split them:
+- `call_builtin`: C++ → guest → C++, the entry and exit alone;
+- `call_top`: the same from C#, measured in both models;
+- `hle_callback_builtin`: the nested call with slot 1 handled in C++;
+- `sfx.AFP=0`: hides FEAT_AFP from FEX, which removes the FPCR writes at every transition. It is a diagnostic, not a default: without AFP, scalar SSE costs more instructions. The new `guest_sse` row (a pure-guest scalar-SSE loop, checked bit-exact against C#) measures that cost in the same process.
+
+**Thunk slots: the import as FEX's own thunk op** (the cheaper-import prototype, stock FEX, no patch). `0f 3f` + a 32-byte name compiles into an inline host call in the middle of a block. FEX spills the static registers (not NZCV), calls `ThunkHandler::LookupThunk(name)(rdi)`, fills them back, then pops the return address and returns through the call-return stack. Compared with the `syscall` slot, that drops:
+- the block exit;
+- the separate `ret` block;
+- the rcx/r11 dance;
+- the virtual `SyscallHandler` hop and its range checks.
+
+The shim's `ThunkHandler` recognises names `SFXTHUNK<index>`. Emitted stubs add the frame (x28) and the index, and route the call exactly like import slot *index*: its slot function if set, else the handler. The op returns to `[rsp]` by itself, so a thunk slot cannot block or transfer control; it is for leaf imports, the same class as slot functions. In the PoC, slot 6 is a `jmp` to a thunk slot. Rows `hle_add_thunk`, `hle_add_thunk_direct` and `hle_add_thunk_builtin` pair with `hle_add`, `hle_add_direct` and `hle_add_builtin`. The decision rule for both prototypes is in [`dry-lab.md`](dry-lab.md#callback-fast-path-rule-written-before-the-phone-run).
 
 ## 1. how guest code runs today (`DirectExecutionBackend`, x64 only)
 

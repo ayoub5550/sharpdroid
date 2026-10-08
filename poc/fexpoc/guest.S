@@ -23,6 +23,9 @@
   .set SLOT_YIELD, 3
   .set SLOT_HASH, 4
   .set SLOT_TRANSFER, 5
+  .set SLOT_THUNK, 6       // add(a, b) again, reached through a thunk slot in the fex model
+  .set NTHUNKS, 4
+  .set THUNK_STRIDE, 64
 
 // --- header: magic, slot geometry, then offsets from the base in a fixed order -----------------
 _start:
@@ -52,6 +55,9 @@ hdr:
   .quad code_end - hdr         // 20
   .quad blob_end - hdr         // 21
   .quad scratch - hdr          // 22
+  .quad f_bench_thunk - hdr    // 23
+  .quad thunks - hdr           // 24
+  .quad f_bench_sse - hdr      // 25
 
 // --- import slots, patched by the loader ------------------------------------------------------
   .balign 64
@@ -63,6 +69,13 @@ slots:
   .set slot_yield, slots + SLOT_YIELD * STRIDE
   .set slot_hash, slots + SLOT_HASH * STRIDE
   .set slot_transfer, slots + SLOT_TRANSFER * STRIDE
+  .set slot_thunk, slots + SLOT_THUNK * STRIDE
+
+// thunk slots (fex model): `0f 3f` + a 32-byte name, written by the loader (sfx_thunk_code). an
+// import slot reaches one with a `jmp`. code, so declared executable with the rest.
+  .balign 64
+thunks:
+  .fill NTHUNKS * THUNK_STRIDE, 1, 0xCC
 
 // where a host->guest call returns to: CALLBACKRET (fex model only).
   .balign 16
@@ -263,6 +276,33 @@ f_bench_hle:
   pop rbx
   ret
 
+// f_bench_hle through slot 6: in the fex model a `jmp` to a thunk slot (sfx_thunk_code) instead of
+// the syscall stub. returns sum(i + 1) = n(n+1)/2.
+  .balign 16
+f_bench_thunk:
+  push rbx
+  push r12
+  push r13
+  mov rbx, rdi
+  xor r12d, r12d
+  xor r13d, r13d
+  test rbx, rbx
+  jz 2f
+1:
+  mov rdi, r12
+  mov esi, 1
+  call slot_thunk
+  add r13, rax
+  inc r12
+  cmp r12, rbx
+  jb 1b
+2:
+  mov rax, r13
+  pop r13
+  pop r12
+  pop rbx
+  ret
+
 // n imports that do real work on guest memory (FNV-1a over len bytes): returns n * hash.
   .balign 16
 f_bench_hash:
@@ -347,6 +387,32 @@ f_bench_compute:
   dec rcx
   jnz 1b
 2:
+  ret
+
+// pure guest scalar SSE, no imports: x = min(x*k + a, big) + (float)i * eps, n steps from x = 1.
+// FEX translates it either way; with FEAT_AFP (FPCR.NEP/AH) the scalar ops need fewer arm64
+// instructions, so this is the control for `sfx.AFP=0`. returns the bits of x.
+  .balign 16
+f_bench_sse:
+  mov rcx, rdi
+  movss xmm0, dword ptr [rip + c_f_one]
+  movss xmm1, dword ptr [rip + c_f_k]
+  movss xmm2, dword ptr [rip + c_f_a]
+  movss xmm3, dword ptr [rip + c_f_big]
+  movss xmm5, dword ptr [rip + c_f_eps]
+  test rcx, rcx
+  jz 2f
+1:
+  mulss xmm0, xmm1
+  addss xmm0, xmm2
+  minss xmm0, xmm3
+  cvtsi2ss xmm4, ecx
+  mulss xmm4, xmm5
+  addss xmm0, xmm4
+  dec rcx
+  jnz 1b
+2:
+  movd eax, xmm0
   ret
 
 // a guest thread that blocks four times in an import and is resumed each time, then halts with
@@ -494,6 +560,16 @@ c_2_5:
   .double 2.5
 c_5_0:
   .double 5.0
+c_f_one:
+  .float 1.0
+c_f_k:
+  .float 0.999
+c_f_a:
+  .float 0.5
+c_f_big:
+  .float 1.0e30
+c_f_eps:
+  .float 1.0e-9
 
 code_end:
 

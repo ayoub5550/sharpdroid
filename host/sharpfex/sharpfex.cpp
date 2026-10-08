@@ -25,6 +25,14 @@
 #include <FEXCore/Utils/ArchHelpers/Arm64.h>
 #include <FEXCore/Utils/LongJump.h>
 #include <FEXCore/Utils/TypeDefines.h>
+#include <FEXCore/Core/Thunks.h>
+#include <FEXCore/IR/IR.h>
+
+// private FEXCore headers, read only: the callback fast path and the thunk stubs are emitted with
+// FEX's own emitter so they fill and spill the static registers exactly as the JIT does.
+#include "Interface/Context/Context.h"
+#include "Interface/Core/ArchHelpers/Arm64Emitter.h"
+#include "Interface/Core/LookupCache.h"
 
 #include <atomic>
 #include <cerrno>
@@ -54,6 +62,7 @@ struct SfxThread {
   int32_t CallDepth {}; // sfx_call nesting; blocking is refused inside a host->guest call
   bool InRun {};
   uint64_t PendingHle {}; // counted here and flushed in batches: no shared cache line per import
+  uint64_t PendingCallbacks {};
 };
 
 thread_local SfxThread* CurrentThread;
@@ -80,6 +89,42 @@ std::string Description;
 // "full" also keeps every vector, avx-high and mmx register: for injecting a call at an arbitrary
 // guest instruction, which nothing in this PoC does. sfx_init option `sfx.CallSave=light|full`.
 bool CallSaveFull {};
+// how sfx_call enters the guest. "legacy": FEX's HandleCallback (the dispatcher's callback entry, a
+// dummy call-return entry, the loop-top lookup, and back through the CALLBACKRET block). "fast"
+// (sfx.Callback=fast): our own entry, emitted with FEX's emitter at sfx_init -- see FastEntry below.
+bool CallbackFast {};
+// sfx.Callback=fast-fallback: the fast entry with a dummy call-return entry, so every return takes
+// the fallback exit (FEX's CALLBACKRET block). a test of that exit, which otherwise runs only when an
+// invalidation resets the call-return stack under a callee.
+bool CallbackFallbackTest {};
+// sfx.AFP=0: tell FEX the host has no FEAT_AFP, so no JIT<->host transition writes FPCR. a
+// measuring knob (does the FPCR write dominate a boundary?), not a default: without AFP, FEX needs
+// extra instructions for scalar SSE.
+bool DisableAFP {};
+
+// --- the fast host->guest entry and the thunk slot stubs, emitted once at sfx_init -----------------
+//
+// FastEntry(Frame) is HandleCallback without the detours. the caller has already put the arguments,
+// rip = target and a return address (the CALLBACKRET slot) on the guest stack into Frame->State.
+//   push the host callee-saved registers  -- FEX's own layout (PushCalleeSavedRegisters), so FEX's
+//                                            CALLBACKRET block can still unwind it (the fallback)
+//   SignalHandlerRefCounter++               -- as HandleCallback: old code buffers stay alive while
+//                                            host frames sit above JIT code
+//   fill the static registers               -- FEX's FillStaticRegs (gprs, xmm, nzcv, fpcr, sve preds)
+//   push a *real* call-return entry         -- {CALLBACKRET's guest address, Landing}: the guest's
+//                                            `ret` matches it and branches straight to Landing.
+//                                            HandleCallback pushes a dummy entry, so its `ret` misses,
+//                                            looks the return address up, and runs the 0f 3e block
+//   look the target up in the thread's L1 cache and branch to it; on a miss, the dispatcher's loop
+//   top (which compiles it)
+// Landing: spill the static registers, SignalHandlerRefCounter--, pop the callee-saved registers, ret.
+// if the call-return stack was reset under the callee (an invalidation does that), the guest's `ret`
+// reaches CALLBACKRET instead, whose block unwinds the same frame: both exits are the same exit.
+using FastEntryFn = void (*)(FEXCore::Core::CpuStateFrame* Frame);
+FastEntryFn FastEntry {};
+FastEntryFn FastEntryFallbackTest {};
+void* EmittedCode {};
+constexpr size_t EmittedCodeSize = 64 * 1024;
 
 struct ExecRange {
   uint64_t Base;
@@ -261,6 +306,152 @@ public:
 };
 HleSyscalls Syscalls;
 
+// --- thunk slots: an import as FEX's own thunk op (0f 3f + a 32-byte name) ---------------------------
+//
+// FEX compiles `0f 3f <name>` into an inline host call in the middle of a block: spill the static
+// registers (not nzcv), call LookupThunk(name)(rdi), fill them back, then pop the return address and
+// return -- no block exit, no `syscall` clobbering rcx/r11, no separate `ret` block. FEX hands the host
+// function only rdi; the stubs below add the frame (FEX keeps it in x28 while JIT code runs) and the
+// slot index, and route the call like an import slot: a slot function if one is set, else the handler.
+// the op returns to [rsp] by itself, so a thunk slot can neither block nor transfer control.
+FEXCore::ThunkedFunction* ThunkStubs[MaxSlotFns] {};
+
+void ThunkDispatch(uint64_t /*Rdi*/, FEXCore::Core::CpuStateFrame* Frame, uint32_t Index) {
+  auto& State = Frame->State;
+  auto* T = static_cast<SfxThread*>(Frame->Thread->FrontendPtr);
+  if (++T->PendingHle == 4096) {
+    Stats.HleCalls.fetch_add(T->PendingHle, std::memory_order_relaxed);
+    T->PendingHle = 0;
+  }
+  if (SlotFns[Index].Fn) {
+    SlotFns[Index].Fn(SlotFns[Index].User, State.gregs);
+    return;
+  }
+  if (!Handler) {
+    State.gregs[X86::REG_RAX] = static_cast<uint64_t>(-ENOSYS);
+    return;
+  }
+  sfx_regs Regs;
+  StateToRegs(State, &Regs);
+  const uint64_t ReturnAddress = *reinterpret_cast<const uint64_t*>(State.gregs[X86::REG_RSP]);
+  Regs.rip = ReturnAddress;
+  const int32_t Action = Handler(HandlerUser, Index, &Regs);
+  const uint64_t Rip = State.rip;
+  RegsToState(&Regs, State);
+  State.rip = Rip;
+  if (Regs.rip != ReturnAddress || Action != SFX_CONTINUE) {
+    Stats.Foreign.fetch_add(1, std::memory_order_relaxed);
+    State.gregs[X86::REG_RAX] = static_cast<uint64_t>(-EPERM);
+  }
+}
+
+// a 0f 3f whose name is not one of ours: counted, registers untouched.
+void UnknownThunk(void*) {
+  Stats.Foreign.fetch_add(1, std::memory_order_relaxed);
+}
+
+class SfxThunkHandler final : public FEXCore::ThunkHandler {
+public:
+  FEXCore::ThunkedFunction* LookupThunk(const FEXCore::IR::SHA256Sum& Sum) override {
+    if (std::memcmp(Sum.data, "SFXTHUNK", 8) == 0) {
+      uint32_t Index;
+      std::memcpy(&Index, Sum.data + 8, sizeof(Index));
+      if (Index < MaxSlotFns && ThunkStubs[Index]) {
+        return ThunkStubs[Index];
+      }
+    }
+    return UnknownThunk;
+  }
+};
+SfxThunkHandler Thunks;
+
+class SfxEmitter final : public FEXCore::CPU::Arm64Emitter {
+public:
+  SfxEmitter(FEXCore::Context::ContextImpl* C, void* Buffer, size_t Size)
+    : Arm64Emitter(C, Buffer, Size) {}
+
+  FastEntryFn EmitFastEntry(bool DummyCallRet = false) {
+    using namespace FEXCore::CPU;
+    using FEXCore::Core::CpuStateFrame;
+    ARMEmitter::ForwardLabel Landing, Miss;
+    const auto Entry = GetCursorAddress<FastEntryFn>();
+
+    PushCalleeSavedRegisters();
+    mov(STATE, ARMEmitter::XReg::x0);
+    ldr(ARMEmitter::WReg::w2, STATE, offsetof(CpuStateFrame, SignalHandlerRefCounter));
+    add(ARMEmitter::Size::i32Bit, ARMEmitter::Reg::r2, ARMEmitter::Reg::r2, 1);
+    str(ARMEmitter::WReg::w2, STATE, offsetof(CpuStateFrame, SignalHandlerRefCounter));
+    FillStaticRegs();
+
+    // TMP1-4 are x0-x3 here, none of them a static register.
+    if (DummyCallRet) {
+      stp<ARMEmitter::IndexType::PRE>(ARMEmitter::XReg::zr, ARMEmitter::XReg::zr, REG_CALLRET_SP, -0x10);
+    } else {
+      ldr(TMP1, STATE, offsetof(CpuStateFrame, Pointers.ThunkCallbackRet));
+      (void)adr(TMP2, &Landing);
+      stp<ARMEmitter::IndexType::PRE>(TMP1, TMP2, REG_CALLRET_SP, -0x10);
+    }
+
+    // the L1 lookup an indirect branch does (BranchOps.cpp, ExitFunction).
+    ldr(TMP3, STATE, offsetof(CpuStateFrame, State.rip));
+    ldp<ARMEmitter::IndexType::OFFSET>(TMP1, TMP2, STATE, offsetof(CpuStateFrame, State.L1Pointer));
+    and_(ARMEmitter::Size::i64Bit, TMP2, TMP2, TMP3.R(), ARMEmitter::ShiftType::LSL,
+         FEXCore::ilog2(sizeof(FEXCore::LookupCache::LookupCacheEntry)));
+    add(TMP1, TMP1, TMP2);
+    ldp<ARMEmitter::IndexType::OFFSET>(TMP4, TMP2, TMP1, 0);
+    sub(TMP2, TMP2, TMP3);
+    (void)cbnz(ARMEmitter::Size::i64Bit, TMP2, &Miss);
+    br(TMP4);
+    (void)Bind(&Miss);
+    ldr(TMP4, STATE, offsetof(CpuStateFrame, Pointers.DispatcherLoopTop));
+    br(TMP4);
+
+    // the guest's `ret` popped our call-return entry: ret TMP2 lands here with the guest live in the
+    // static registers and sp back where the entry left it (every block exit resets its stack).
+    (void)Bind(&Landing);
+    SpillStaticRegs(TMP1);
+    ldr(ARMEmitter::WReg::w2, STATE, offsetof(CpuStateFrame, SignalHandlerRefCounter));
+    sub(ARMEmitter::Size::i32Bit, ARMEmitter::Reg::r2, ARMEmitter::Reg::r2, 1);
+    str(ARMEmitter::WReg::w2, STATE, offsetof(CpuStateFrame, SignalHandlerRefCounter));
+    PopCalleeSavedRegisters();
+    ret();
+    return Entry;
+  }
+
+  // ThunkDispatch(rdi, frame = x28, index): x1-x3 are caller-saved, and FEX calls the thunk as an
+  // ordinary AAPCS function.
+  FEXCore::ThunkedFunction* EmitThunkStub(uint32_t Index) {
+    const auto Stub = GetCursorAddress<FEXCore::ThunkedFunction*>();
+    mov(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::r1, FEXCore::CPU::STATE.R());
+    LoadConstant(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::r2, Index);
+    LoadConstant(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::r3, reinterpret_cast<uint64_t>(&ThunkDispatch));
+    br(ARMEmitter::XReg::x3);
+    return Stub;
+  }
+
+  size_t Used() const {
+    return GetCursorOffset();
+  }
+};
+
+bool EmitHostCode() {
+  void* Code = ::mmap(nullptr, EmittedCodeSize, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (Code == MAP_FAILED) {
+    return false;
+  }
+  SfxEmitter Emitter(static_cast<FEXCore::Context::ContextImpl*>(CTX.get()), Code, EmittedCodeSize);
+  FastEntry = Emitter.EmitFastEntry();
+  FastEntryFallbackTest = Emitter.EmitFastEntry(true);
+  for (uint32_t i = 0; i < MaxSlotFns; ++i) {
+    ThunkStubs[i] = Emitter.EmitThunkStub(i);
+  }
+  const size_t Used = Emitter.Used();
+  ARMEmitter::Buffer::ClearICache(Code, Used);
+  ::mprotect(Code, EmittedCodeSize, PROT_READ | PROT_EXEC);
+  EmittedCode = Code;
+  return true;
+}
+
 // --- faults: ours first, everything else to whoever was installed before (.NET) ---------------------
 
 struct FPSimdRecord {
@@ -347,6 +538,10 @@ void FlushStats(SfxThread& T) {
     Stats.HleCalls.fetch_add(T.PendingHle, std::memory_order_relaxed);
     T.PendingHle = 0;
   }
+  if (T.PendingCallbacks) {
+    Stats.Callbacks.fetch_add(T.PendingCallbacks, std::memory_order_relaxed);
+    T.PendingCallbacks = 0;
+  }
 }
 
 void BuiltinAdd(void*, uint64_t* Gpr) {
@@ -355,6 +550,14 @@ void BuiltinAdd(void*, uint64_t* Gpr) {
 
 void BuiltinNull(void*, uint64_t* Gpr) {
   Gpr[X86::REG_RAX] = 0;
+}
+
+// callback(fn, x) = fn(x, 7) + 1, the PoC's slot 1, without managed code: what a host->guest call
+// costs FEX and the shim alone. sfx_call puts the gprs back before this writes rax.
+void BuiltinCallback(void*, uint64_t* Gpr) {
+  const uint64_t Args[2] = {Gpr[X86::REG_RSI], 7};
+  const uint64_t Fn = Gpr[X86::REG_RDI];
+  Gpr[X86::REG_RAX] = sfx_call(CurrentThread, Fn, 0, Args, 2) + 1;
 }
 
 bool SetupCallRetStack(SfxThread& T) {
@@ -413,6 +616,27 @@ bool ApplyOption(std::string_view Pair) {
   if (Equals == std::string_view::npos || Equals == 0) {
     return false;
   }
+  if (Pair.substr(0, Equals) == "sfx.Callback") {
+    const auto V = Pair.substr(Equals + 1);
+    if (V != "legacy" && V != "fast" && V != "fast-fallback") {
+      return false;
+    }
+    CallbackFast = V != "legacy";
+    CallbackFallbackTest = V == "fast-fallback";
+    Description += " ";
+    Description += Pair;
+    return true;
+  }
+  if (Pair.substr(0, Equals) == "sfx.AFP") {
+    const auto V = Pair.substr(Equals + 1);
+    if (V != "0" && V != "1") {
+      return false;
+    }
+    DisableAFP = V == "0";
+    Description += " ";
+    Description += Pair;
+    return true;
+  }
   if (Pair.substr(0, Equals) == "sfx.CallSave") {
     const auto V = Pair.substr(Equals + 1);
     if (V != "light" && V != "full") {
@@ -465,7 +689,10 @@ int32_t sfx_init(const char* Options) {
   // code patched after it ran needs sfx_invalidate.
   FEXCore::Config::Set(FEXCore::Config::CONFIG_SMCCHECKS, "1");
 
-  const auto Features = HostLayer::HostFeatures::Build(HostLayer::HostFeatures::Mode::Probe);
+  auto Features = HostLayer::HostFeatures::Build(HostLayer::HostFeatures::Mode::Probe);
+  if (DisableAFP) {
+    Features.SupportsAFP = false;
+  }
   AvxLayout = Features.SupportsAVX && Features.SupportsSVE256;
   HostLayer::FEXThreads::Install();
 
@@ -475,8 +702,13 @@ int32_t sfx_init(const char* Options) {
   }
   CTX->SetSyscallHandler(&Syscalls);
   CTX->SetSignalDelegator(&Signals);
+  CTX->SetThunkHandler(&Thunks);
   CTX->EnableExitOnHLT();
   if (!CTX->InitCore()) {
+    CTX.reset();
+    return 1;
+  }
+  if (!EmitHostCode()) {
     CTX.reset();
     return 1;
   }
@@ -493,9 +725,10 @@ int32_t sfx_init(const char* Options) {
   ::sigaction(SIGBUS, &Action, &PreviousBUS);
 
   char Buffer[160];
-  std::snprintf(Buffer, sizeof(Buffer), " | TSO=%d atomics=%d rcpc=%d tsoimm9=%d avxlayout=%d",
+  std::snprintf(Buffer, sizeof(Buffer), " | TSO=%d atomics=%d rcpc=%d tsoimm9=%d avxlayout=%d afp=%d callback=%s",
                 static_cast<int>(FEXCore::Config::Get_TSOENABLED()()), Features.SupportsAtomics, Features.SupportsRCPC,
-                Features.SupportsTSOImm9, AvxLayout);
+                Features.SupportsTSOImm9, AvxLayout, Features.SupportsAFP,
+                CallbackFallbackTest ? "fast-fallback" : CallbackFast ? "fast" : "legacy");
   Description += Buffer;
   return 0;
 }
@@ -529,6 +762,9 @@ sfx_slot_fn sfx_builtin(const char* Name) {
   }
   if (N == "null") {
     return BuiltinNull;
+  }
+  if (N == "callback") {
+    return BuiltinCallback;
   }
   return nullptr;
 }
@@ -623,8 +859,78 @@ int32_t sfx_run(void* Handle) {
   return T->Reason;
 }
 
+} // extern "C"
+
+namespace {
+// sfx.Callback=fast. the same contract and the same save/restore as the legacy path below; what
+// differs is the entry (FastEntry instead of HandleCallback), and the bookkeeping: callbacks are
+// counted per thread like imports, and nested calls skip the TLS store (the run or call around them
+// already made this thread current).
+uint64_t CallFast(SfxThread* T, uint64_t Rip, uint64_t Rsp, const uint64_t* Args, int32_t Count) {
+  if (T->CallDepth == 0 && !T->InRun) {
+    CurrentThread = T;
+  }
+  auto* Frame = T->Thread->CurrentFrame;
+  auto& State = Frame->State;
+  SavedGuestState Saved;
+  LightGuestState Light;
+  if (CallSaveFull) {
+    Save(State, Saved);
+  } else {
+    Light.Rip = State.rip;
+    std::memcpy(Light.Gregs, State.gregs, sizeof(Light.Gregs));
+    Light.CallRetSp = State.callret_sp;
+    Light.Mxcsr = State.mxcsr;
+    Light.PfRaw = State.pf_raw;
+    Light.AfRaw = State.af_raw;
+    std::memcpy(Light.Flags, State.flags, sizeof(Light.Flags));
+  }
+
+  static constexpr int ArgRegs[6] = {X86::REG_RDI, X86::REG_RSI, X86::REG_RDX, X86::REG_RCX, X86::REG_R8, X86::REG_R9};
+  for (int i = 0; i < Count && i < 6; ++i) {
+    State.gregs[ArgRegs[i]] = Args[i];
+  }
+  if (!Rsp) {
+    Rsp = State.gregs[X86::REG_RSP] - 128; // below the red zone of whatever was running
+  }
+  // what a `call` leaves: the return address (CALLBACKRET) at rsp, rsp 8 mod 16.
+  const uint64_t Sp = (Rsp & ~15ULL) - 8;
+  *reinterpret_cast<uint64_t*>(Sp) = CallbackReturnAddress;
+  State.gregs[X86::REG_RSP] = Sp;
+  State.rip = Rip;
+  Frame->Pointers.ThunkCallbackRet = CallbackReturnAddress;
+
+  ++T->CallDepth;
+  if (++T->PendingCallbacks == 4096) {
+    Stats.Callbacks.fetch_add(T->PendingCallbacks, std::memory_order_relaxed);
+    T->PendingCallbacks = 0;
+  }
+  (CallbackFallbackTest ? FastEntryFallbackTest : FastEntry)(Frame);
+  --T->CallDepth;
+
+  const uint64_t Result = State.gregs[X86::REG_RAX];
+  if (CallSaveFull) {
+    Restore(Saved, State);
+  } else {
+    State.rip = Light.Rip;
+    std::memcpy(State.gregs, Light.Gregs, sizeof(Light.Gregs));
+    State.callret_sp = Light.CallRetSp;
+    State.mxcsr = Light.Mxcsr;
+    State.pf_raw = Light.PfRaw;
+    State.af_raw = Light.AfRaw;
+    std::memcpy(State.flags, Light.Flags, sizeof(Light.Flags));
+  }
+  return Result;
+}
+} // namespace
+
+extern "C" {
+
 uint64_t sfx_call(void* Handle, uint64_t Rip, uint64_t Rsp, const uint64_t* Args, int32_t Count) {
   auto* T = static_cast<SfxThread*>(Handle);
+  if (CallbackFast) {
+    return CallFast(T, Rip, Rsp, Args, Count);
+  }
   CurrentThread = T;
   auto* Frame = T->Thread->CurrentFrame;
   auto& State = Frame->State;
@@ -688,6 +994,10 @@ void sfx_set_regs(void* Handle, const sfx_regs* In) {
 }
 
 void sfx_get_stats(sfx_stats* Out) {
+  // the calling thread's batched counts; other threads flush theirs every 4096 and when they end.
+  if (CurrentThread) {
+    FlushStats(*CurrentThread);
+  }
   Out->hle_calls = Stats.HleCalls.load();
   Out->callbacks = Stats.Callbacks.load();
   Out->blocks = Stats.Blocks.load();
@@ -696,6 +1006,27 @@ void sfx_get_stats(sfx_stats* Out) {
   Out->unaligned_fixups = Stats.Unaligned.load();
   Out->jit_restarts = Stats.Restarts.load();
   Out->signals_chained = Stats.Chained.load();
+}
+
+uint64_t sfx_bench_call(void* Thread, uint64_t Rip, uint64_t Rsp, uint64_t N) {
+  uint64_t Sum = 0;
+  for (uint64_t i = 0; i < N; ++i) {
+    const uint64_t Args[2] = {i, 7};
+    Sum += sfx_call(Thread, Rip, Rsp, Args, 2);
+  }
+  return Sum;
+}
+
+int32_t sfx_thunk_code(uint32_t Index, uint8_t* Out, uint32_t Size) {
+  if (Index >= MaxSlotFns || Size < SFX_THUNK_CODE_SIZE) {
+    return 0;
+  }
+  std::memset(Out, 0, SFX_THUNK_CODE_SIZE);
+  Out[0] = 0x0F;
+  Out[1] = 0x3F;
+  std::memcpy(Out + 2, "SFXTHUNK", 8);
+  std::memcpy(Out + 10, &Index, sizeof(Index));
+  return SFX_THUNK_CODE_SIZE;
 }
 
 } // extern "C"

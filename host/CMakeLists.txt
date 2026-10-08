@@ -321,6 +321,11 @@ target_include_directories(sharpfex PRIVATE
   "${FEX_ROOT}/FEXCore/include"
   "${CMAKE_BINARY_DIR}/include"
   "${CMAKE_CURRENT_SOURCE_DIR}/src")
+# the callback fast path and the thunk-slot stubs are emitted with FEXCore's own Arm64Emitter, so
+# they fill and spill the guest's static registers exactly the way the JIT does (same register map,
+# same AFP/SVE handling) -- which takes FEXCore's private headers. read only; nothing is patched.
+target_include_directories(sharpfex PRIVATE $<TARGET_PROPERTY:FEXCore_object,INCLUDE_DIRECTORIES>)
+target_compile_definitions(sharpfex PRIVATE $<TARGET_PROPERTY:FEXCore_object,COMPILE_DEFINITIONS>)
 target_link_libraries(sharpfex PRIVATE FEXCore JemallocDummy log)
 target_link_options(sharpfex PRIVATE "-static-libstdc++" "-Wl,--exclude-libs,ALL" "-Wl,--gc-sections")
 set_target_properties(sharpfex PROPERTIES EXCLUDE_FROM_ALL TRUE C_VISIBILITY_PRESET default)

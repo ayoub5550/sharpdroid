@@ -59,7 +59,7 @@ enum Sym
 {
     Slots, CbRet, TestArgs, TestRegs, TestCallback, GuestCbPlain, TestTransfer, BenchHle, BenchHash, BenchCb,
     BenchCompute, WorkerYield, Unaligned, X64Enter, X64GatewayCtx, X64GatewayFn, X64HostRsp, X64Tramps,
-    StrHello, HashBuf, CodeEnd, BlobEnd, Scratch, Count,
+    StrHello, HashBuf, CodeEnd, BlobEnd, Scratch, BenchThunk, Thunks, BenchSse, Count,
 }
 
 static unsafe class Guest
@@ -138,6 +138,8 @@ unsafe sealed class FexBackend : IBackend
     delegate* unmanaged<SfxStats*, void> _stats;
     delegate* unmanaged<uint, void*, void*, int> _setSlotFn;
     delegate* unmanaged<byte*, void*> _builtin;
+    delegate* unmanaged<void*, ulong, ulong, ulong, ulong> _benchCall;
+    delegate* unmanaged<uint, byte*, uint, int> _thunkCode;
 
     [ThreadStatic] static nint t_thread;
     public static nint CurrentThread => t_thread;
@@ -161,6 +163,8 @@ unsafe sealed class FexBackend : IBackend
         _stats = (delegate* unmanaged<SfxStats*, void>)NativeLibrary.GetExport(h, "sfx_get_stats");
         _setSlotFn = (delegate* unmanaged<uint, void*, void*, int>)NativeLibrary.GetExport(h, "sfx_set_slot_fn");
         _builtin = (delegate* unmanaged<byte*, void*>)NativeLibrary.GetExport(h, "sfx_builtin");
+        _benchCall = (delegate* unmanaged<void*, ulong, ulong, ulong, ulong>)NativeLibrary.GetExport(h, "sfx_bench_call");
+        _thunkCode = (delegate* unmanaged<uint, byte*, uint, int>)NativeLibrary.GetExport(h, "sfx_thunk_code");
         _options = options;
     }
 
@@ -184,7 +188,22 @@ unsafe sealed class FexBackend : IBackend
         ReadOnlySpan<byte> stub = [0x48, 0x89, 0x4C, 0x24, 0xF8, 0x4C, 0x89, 0x5C, 0x24, 0xF0, 0x0F, 0x05, 0xC3];
         for (uint i = 0; i < Guest.SlotCount; i++)
             Guest.PatchSlot(i, stub);
+
+        // slot 6 goes through a thunk slot instead: `jmp thunk0`, and thunk0 = 0f 3f + name (sharpfex.h).
+        byte* thunk = (byte*)Guest.A(Sym.Thunks);
+        if (_thunkCode(ThunkSlot, thunk, 64) != 34)
+            throw new InvalidOperationException("sfx_thunk_code failed");
+        ulong slot = Guest.A(Sym.Slots) + ThunkSlot * Guest.SlotStride;
+        Span<byte> jmp = stackalloc byte[5];
+        jmp[0] = 0xE9; // jmp rel32
+        BitConverter.TryWriteBytes(jmp.Slice(1), (int)((long)Guest.A(Sym.Thunks) - (long)(slot + 5)));
+        Guest.PatchSlot(ThunkSlot, jmp);
     }
+
+    public const uint ThunkSlot = 6;
+
+    // n host->guest calls made by C++ inside libsharpfex: the entry and exit alone, no managed code.
+    public ulong BenchCall(ulong rip, ulong n) => _benchCall((void*)t_thread, rip, t_stackTop, n);
 
     [UnmanagedCallersOnly]
     static int HleEntry(void* user, uint index, SfxRegs* regs) => Hle.Handle(index, regs);
@@ -331,6 +350,7 @@ static unsafe class Hle
         switch (index)
         {
             case 2: // add(a, b)
+            case 6: // the same, behind a thunk slot in the fex model
                 r->Gpr[R.Rax] = r->Gpr[R.Rdi] + r->Gpr[R.Rsi];
                 return Continue;
             case 0: // args(str, 1, 2, 3, 4, 5, [rsp+8]=6, xmm0=2.5)
@@ -482,6 +502,10 @@ static unsafe class Program
             Check("block/resume: a guest thread parks 4x in an import and is resumed", ok,
                   $"blocked {results.Count}x, yields=[{string.Join(",", Hle.Yields)}], final rax=0x{regs.Gpr[R.Rax]:X}");
 
+            // slot 6 is a `jmp` to FEX's thunk op (0f 3f + name): an inline host call, then `ret`.
+            rc = fb.Call(Guest.A(Sym.BenchThunk), 0, 1000);
+            Check("thunk slot: 1000 imports through FEX's thunk op", rc == 500500, $"rax={rc}");
+
             if (SkipThreads)
                 Console.WriteLine("[TEST] threads: skipped (--skip-threads)");
             else
@@ -593,6 +617,7 @@ static unsafe class Program
     }
 
     static ulong ExpectedCb(long n) => 7UL * (ulong)n * (ulong)(n - 1) / 2 + 2UL * (ulong)n;
+    static ulong ExpectedPlain(long n) => 7UL * (ulong)n * (ulong)(n - 1) / 2 + (ulong)n;
 
     // --- benches ----------------------------------------------------------------------------------
 
@@ -609,6 +634,42 @@ static unsafe class Program
               () => Backend.Call(Guest.A(Sym.BenchHash), 0, (ulong)nHash, hashBuf, 64), (ulong)nHash * hash);
         Bench("hle_callback", "guest -> HLE -> guest callback -> HLE -> guest", nCb, rounds,
               () => Backend.Call(Guest.A(Sym.BenchCb), 0, (ulong)nCb), ExpectedCb(nCb));
+        // a host->guest call with no import around it: C# calls guest_cb_plain(i, 7) at top level.
+        ulong cbPlain = Guest.A(Sym.GuestCbPlain);
+        Bench("call_top", "C# -> guest function -> C#, top level (no import around it)", nCb, rounds, () =>
+        {
+            ulong acc = 0;
+            for (long i = 0; i < nCb; i++)
+                acc += Backend.Call(cbPlain, 0, (ulong)i, 7);
+            return acc;
+        }, ExpectedPlain(nCb));
+        if (Backend is FexBackend fc)
+        {
+            // the same calls made by C++ inside the shim: the guest entry and exit alone.
+            Bench("call_builtin", "C++ -> guest function -> C++ (sfx_call's entry and exit alone)", nCb, rounds,
+                  () => fc.BenchCall(cbPlain, (ulong)nCb), ExpectedPlain(nCb));
+            if (!SkipSlotFn)
+            {
+                // hle_callback with slot 1 handled in C++: the nested call without managed code.
+                fc.SetSlotFn(1, fc.Builtin("callback"));
+                Bench("hle_callback_builtin", "hle_callback, slot 1 a C++ slot function (no managed code)", nCb, rounds,
+                      () => Backend.Call(Guest.A(Sym.BenchCb), 0, (ulong)nCb), ExpectedCb(nCb));
+                fc.SetSlotFn(1, null);
+            }
+            // the import boundary as FEX's thunk op (sharpfex.h, thunk slots): slot 6 = jmp to a 0f 3f.
+            Bench("hle_add_thunk", "hle_add through a thunk slot, C# handler (sfx_regs copy)", n, rounds,
+                  () => Backend.Call(Guest.A(Sym.BenchThunk), 0, (ulong)n), (ulong)n * (ulong)(n + 1) / 2);
+            if (!SkipSlotFn)
+            {
+                fc.SetSlotFn(FexBackend.ThunkSlot, FexBackend.AddDirectPtr);
+                Bench("hle_add_thunk_direct", "thunk slot, C# slot function (no copy)", n, rounds,
+                      () => Backend.Call(Guest.A(Sym.BenchThunk), 0, (ulong)n), (ulong)n * (ulong)(n + 1) / 2);
+                fc.SetSlotFn(FexBackend.ThunkSlot, fc.Builtin("add"));
+                Bench("hle_add_thunk_builtin", "thunk slot, C++ slot function (the thunk boundary alone)", n, rounds,
+                      () => Backend.Call(Guest.A(Sym.BenchThunk), 0, (ulong)n), (ulong)n * (ulong)(n + 1) / 2);
+                fc.SetSlotFn(FexBackend.ThunkSlot, null);
+            }
+        }
         if (Backend is FexBackend fb && !SkipSlotFn)
         {
             // the same guest loop with slot 2 rerouted: what the copy costs, and what FEX's boundary costs alone.
@@ -626,6 +687,9 @@ static unsafe class Program
                   new Span<byte>((void*)Guest.A(Sym.Scratch), 512).Clear();
                   return Backend.Call(Guest.A(Sym.BenchCompute), 0, (ulong)nCompute);
               }, computeExpected);
+        // scalar SSE in the guest: the control for sfx.AFP=0 (FEX needs more instructions without AFP).
+        Bench("guest_sse", "pure guest scalar SSE loop, no imports (the AFP control)", nCompute / 4, rounds,
+              () => Backend.Call(Guest.A(Sym.BenchSse), 0, (ulong)(nCompute / 4)), SseReference(nCompute / 4));
         // the C# body alone, no guest at all: the floor every model pays.
         Bench("csharp_body", "the hle_add handler called directly from C#", n, rounds, () =>
         {
@@ -640,6 +704,22 @@ static unsafe class Program
             }
             return acc;
         }, (ulong)n * (ulong)(n + 1) / 2);
+    }
+
+    // f_bench_sse in C#: IEEE single, round to nearest, no contraction -- bit-exact with SSE.
+    static ulong SseReference(long n)
+    {
+        float x = 1.0f, k = 0.999f, a = 0.5f, big = 1.0e30f, eps = 1.0e-9f;
+        for (long c = n; c > 0; c--)
+        {
+            x = x * k;
+            x = x + a;
+            x = x < big ? x : big;
+            float t = (float)(int)c;
+            t = t * eps;
+            x = x + t;
+        }
+        return BitConverter.SingleToUInt32Bits(x);
     }
 
     static ulong ComputeReference(long n)

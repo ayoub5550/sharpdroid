@@ -23,7 +23,7 @@
 extern "C" {
 #endif
 
-#define SFX_ABI_VERSION 2
+#define SFX_ABI_VERSION 3
 
 // the guest state an HLE body may read or write. gpr[] is in x86 encoding order:
 // rax rcx rdx rbx rsp rbp rsi rdi r8 r9 r10 r11 r12 r13 r14 r15.
@@ -69,15 +69,31 @@ typedef struct sfx_stats {
 } sfx_stats;
 
 // FEX options as "Name=Value" pairs separated by ';' (the same names `--fex` takes), plus the
-// shim's own `sfx.*` options, or NULL.
+// shim's own `sfx.*` options, or NULL:
+//   sfx.CallSave=light|full   what sfx_call preserves (below)
+//   sfx.Callback=legacy|fast  how sfx_call enters the guest: FEX's HandleCallback, or the shim's own
+//                             entry (fills the static registers, pushes a call-return entry that the
+//                             guest's `ret` matches, and branches to the block). same contract.
+//                             `fast-fallback` makes every return take the fallback exit (a test)
+//   sfx.AFP=0                 hide FEAT_AFP from FEX: no FPCR write at any JIT<->host transition
+//                             (a measuring knob; scalar SSE costs more without AFP)
 // returns 0 on success.
 int32_t sfx_init(const char* options);
 const char* sfx_describe(void);
 void sfx_set_hle_handler(sfx_hle_fn fn, void* user);
 // route import slot `index` (< 64) to a slot function instead of the handler; fn = NULL undoes it.
 int32_t sfx_set_slot_fn(uint32_t index, sfx_slot_fn fn, void* user);
-// built-in slot functions, for measuring the boundary itself: "add" (rax = rdi + rsi), "null".
+// built-in slot functions, for measuring the boundary itself: "add" (rax = rdi + rsi), "null",
+// "callback" (rax = sfx_call(rdi, rsi, 7) + 1 on the current thread: a host->guest call from C++).
 sfx_slot_fn sfx_builtin(const char* name);
+// thunk slots: the import as FEX's thunk op, `0f 3f` + a 32-byte name, which FEX compiles into an
+// inline host call (no block exit, no syscall, rcx/r11 untouched) followed by a `ret`. index `i`
+// routes like import slot `i`: its slot function if set, else the handler, which may not block or
+// change rip (the op returns to [rsp] itself; such a call gets rax = -EPERM). writes the
+// SFX_THUNK_CODE_SIZE bytes for slot `index` to out and returns their count (0 on a bad argument).
+// the bytes go anywhere in declared guest code; an import slot can `jmp` to them.
+#define SFX_THUNK_CODE_SIZE 34
+int32_t sfx_thunk_code(uint32_t index, uint8_t* out, uint32_t size);
 // the import slot table: `count` slots of `stride` bytes at `base`.
 int32_t sfx_set_import_slots(uint64_t base, uint32_t count, uint32_t stride);
 // a guest address holding `0f 3e` (CALLBACKRET), where a host->guest call returns to.
@@ -97,6 +113,8 @@ int32_t sfx_run(void* thread);
 // `sfx.CallSave=full` preserves every vector register too. rsp = 0 uses the thread's current guest
 // stack, below the red zone.
 uint64_t sfx_call(void* thread, uint64_t rip, uint64_t rsp, const uint64_t* args, int32_t count);
+// a benchmark: n calls of sfx_call(thread, rip, rsp, {i, 7}) from C++, the sum of their results.
+uint64_t sfx_bench_call(void* thread, uint64_t rip, uint64_t rsp, uint64_t n);
 void sfx_get_regs(void* thread, sfx_regs* out);
 void sfx_set_regs(void* thread, const sfx_regs* in);
 void sfx_get_stats(sfx_stats* out);
