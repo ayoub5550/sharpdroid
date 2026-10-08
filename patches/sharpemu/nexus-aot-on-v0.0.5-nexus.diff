@@ -1,0 +1,2630 @@
+diff --git a/src/SharpEmu.CLI/Program.cs b/src/SharpEmu.CLI/Program.cs
+index 197e9f3..5de1f03 100644
+--- a/src/SharpEmu.CLI/Program.cs
++++ b/src/SharpEmu.CLI/Program.cs
+@@ -3,7 +3,9 @@
+ 
+ using SharpEmu.Core.Runtime;
+ using SharpEmu.Core.Cpu;
++#if !SHARPEMU_HEADLESS
+ using SharpEmu.GUI;
++#endif
+ using SharpEmu.HLE;
+ using SharpEmu.Libs.VideoOut;
+ using SharpEmu.Logging;
+@@ -45,6 +47,7 @@ internal static partial class Program
+     [STAThread]
+     private static int Main(string[] args)
+     {
++        SharpEmu.HLE.BootTrace.Mark("main");
+         ConfigureManagedPluginResolution();
+ 
+         if (args.Length > 0 && args[0] == SharpEmu.Core.Diagnostics.WindowsCrashCapture.HelperArgument)
+@@ -64,6 +67,23 @@ internal static partial class Program
+         }
+     }
+ 
++    // NativeAOT gives a static class no runtime type handle unless something names it with typeof,
++    // so the HLE warm-up's reflection sweep cannot run these initializers there (it reports them
++    // under SHARPEMU_BOOT_TRACE=1). Each holds real static state and is first reached from the GPU
++    // path, which can be a guest thread, so they run here, on the host thread, before any guest
++    // thread exists -- the same guarantee the warm-up gives the JIT build. A no-op under CoreCLR.
++    private static void WarmAotOnlyInitializers()
++    {
++        if (System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeCompiled)
++        {
++            return;
++        }
++
++        System.Runtime.CompilerServices.RuntimeHelpers.RunClassConstructor(typeof(SharpEmu.ShaderCompiler.Gen5ShaderTranslator).TypeHandle);
++        System.Runtime.CompilerServices.RuntimeHelpers.RunClassConstructor(typeof(SharpEmu.ShaderCompiler.Vulkan.Gen5SpirvTranslator).TypeHandle);
++        SharpEmu.HLE.BootTrace.Mark("aot-initializers");
++    }
++
+     private static void ConfigureManagedPluginResolution()
+     {
+         AssemblyLoadContext.Default.Resolving += static (loadContext, assemblyName) =>
+@@ -85,16 +105,23 @@ internal static partial class Program
+ 
+     private static int Run(string[] args)
+     {
++#if !SHARPEMU_HEADLESS
+         if (Updater.TryApply(args, out var updateExitCode))
+         {
+             return updateExitCode;
+         }
++#endif
+ 
+         args = NormalizeInternalArguments(args, out var isMitigatedChild);
+ 
+         if (args.Length == 0)
+         {
++#if SHARPEMU_HEADLESS
++            Console.Error.WriteLine("This is a headless SharpEmu build; usage: SharpEmu <eboot.bin> [options]");
++            return 2;
++#else
+             return GuiLauncher.Run();
++#endif
+         }
+ 
+         // The executable uses the GUI subsystem, so CLI mode has to connect
+@@ -306,12 +333,14 @@ internal static partial class Program
+         }
+ 
+         Console.Error.WriteLine("[DEBUG] Creating runtime...");
++        SharpEmu.HLE.BootTrace.Mark("create-runtime");
+ 
+         SharpEmu.Core.Diagnostics.WindowsCrashCapture.StartIfEnabled(logFilePath);
+ 
+         try
+         {
+             using var runtime = SharpEmuRuntime.CreateDefault(runtimeOptions);
++            WarmAotOnlyInitializers();
+ 
+             OrbisGen2Result result;
+             ConsoleCancelEventHandler? cancelHandler = null;
+@@ -340,6 +369,7 @@ internal static partial class Program
+             }
+             catch (Exception ex)
+             {
++                SharpEmu.HLE.BootTrace.Mark("run-threw");
+                 Console.Error.WriteLine($"[DEBUG] Exception: {ex}");
+                 Log.Error("SharpEmu failed to run.", ex);
+                 return 3;
+@@ -1407,6 +1437,10 @@ internal static partial class Program
+     private static HostVideoOptions LoadConfiguredVideoOptions(string ebootPath)
+     {
+         var defaults = HostVideoOptions.Default;
++#if SHARPEMU_HEADLESS
++        // Headless build has no GUI settings store; command-line overrides still apply.
++        return defaults;
++#else
+         try
+         {
+             var effective = EffectiveLaunchSettings.Resolve(
+@@ -1450,6 +1484,7 @@ internal static partial class Program
+                 $"[LOADER][WARN] GUI video settings could not be loaded; using defaults: {exception.Message}");
+             return defaults;
+         }
++#endif
+     }
+ 
+     private static bool TrySplitOption(string argument, string name, out string value)
+diff --git a/src/SharpEmu.CLI/SharpEmu.CLI.csproj b/src/SharpEmu.CLI/SharpEmu.CLI.csproj
+index 7cc497b..5ba8f52 100644
+--- a/src/SharpEmu.CLI/SharpEmu.CLI.csproj
++++ b/src/SharpEmu.CLI/SharpEmu.CLI.csproj
+@@ -8,10 +8,35 @@ SPDX-License-Identifier: GPL-2.0-or-later
+   <ItemGroup>
+     <ProjectReference Include="..\SharpEmu.Core\SharpEmu.Core.csproj" />
+     <ProjectReference Include="..\SharpEmu.Debugger\SharpEmu.Debugger.csproj" />
+-    <ProjectReference Include="..\SharpEmu.GUI\SharpEmu.GUI.csproj" />
++    <ProjectReference Include="..\SharpEmu.GUI\SharpEmu.GUI.csproj" Condition="'$(SharpEmuHeadless)' != 'true'" />
+     <ProjectReference Include="..\SharpEmu.Logging\SharpEmu.Logging.csproj" />
+   </ItemGroup>
+ 
++  <!-- Headless NativeAOT mode (sharpdroid payload): -p:SharpEmuHeadless=true drops
++       the Avalonia GUI and publishes with NativeAOT instead of single-file R2R. -->
++  <PropertyGroup Condition="'$(SharpEmuHeadless)' == 'true'">
++    <DefineConstants>$(DefineConstants);SHARPEMU_HEADLESS</DefineConstants>
++  </PropertyGroup>
++  <!-- PublishAot must be set here, not as a global -p: (a global PublishAot
++       leaks into the netstandard source-generator project -> NETSDK1207). -->
++  <PropertyGroup Condition="'$(SharpEmuHeadless)' == 'true' and '$(SharpEmuNativeAot)' == 'true'">
++    <PublishAot>true</PublishAot>
++    <InvariantGlobalization>true</InvariantGlobalization>
++    <PublishSingleFile>false</PublishSingleFile>
++    <PublishReadyToRun>false</PublishReadyToRun>
++    <EnableCompressionInSingleFile>false</EnableCompressionInSingleFile>
++    <IncludeNativeLibrariesForSelfExtract>false</IncludeNativeLibrariesForSelfExtract>
++  </PropertyGroup>
++  <!-- Rooted whole under NativeAOT: the HLE warm-up enumerates these assemblies' types to run
++       every class constructor before a guest thread exists, which needs their metadata kept, and
++       AjmMp3Decoder reaches NLayer's internal stream reader by reflection. -->
++  <ItemGroup Condition="'$(SharpEmuHeadless)' == 'true' and '$(SharpEmuNativeAot)' == 'true'">
++    <TrimmerRootAssembly Include="SharpEmu.HLE" />
++    <TrimmerRootAssembly Include="SharpEmu.Libs" />
++    <TrimmerRootAssembly Include="SharpEmu.Core" />
++    <TrimmerRootAssembly Include="NLayer" />
++  </ItemGroup>
++
+   <PropertyGroup>
+     <!-- GUI subsystem so starting without arguments opens the frontend with no
+          console window; CLI mode re-attaches to the parent terminal's console. -->
+diff --git a/src/SharpEmu.Core/Cpu/CpuDispatcher.cs b/src/SharpEmu.Core/Cpu/CpuDispatcher.cs
+index a6eaffc..6a9c73c 100644
+--- a/src/SharpEmu.Core/Cpu/CpuDispatcher.cs
++++ b/src/SharpEmu.Core/Cpu/CpuDispatcher.cs
+@@ -8,6 +8,7 @@ using SharpEmu.Core.Cpu.Native;
+ using SharpEmu.Core.Loader;
+ using SharpEmu.Core.Memory;
+ using SharpEmu.HLE;
++using SharpEmu.HLE.Host;
+ 
+ namespace SharpEmu.Core.Cpu;
+ 
+@@ -22,19 +23,21 @@ public sealed class CpuDispatcher : ICpuDispatcher, IDisposable
+     // The top of the x86-64 user address space (0x7FFD..0x7FFF) is only
+     // freely mappable on Windows; on macOS/Linux it hosts the dyld shared
+     // cache / vdso and (under Rosetta 2) the translator runtime, so POSIX
+-    // hosts use the equivalent layout one slot lower at 0x6FFx.
+-    private static readonly ulong StackBaseAddress = OperatingSystem.IsWindows() ? 0x7FFF_F000_0000UL : 0x6FFF_F000_0000UL;
++    // hosts use the equivalent layout one slot lower at 0x6FFx. Neither fits
++    // a host whose user address space is narrower than 47 bits, so the whole
++    // family is chosen once at startup - see HostAddressSpace.
++    private static readonly ulong StackBaseAddress = HostAddressSpace.StackBaseAddress;
+     private const ulong StackSize = 0x0020_0000UL;
+-    private static readonly ulong TlsBaseAddress = OperatingSystem.IsWindows() ? 0x7FFE_0000_0000UL : 0x6FFE_0000_0000UL;
++    private static readonly ulong TlsBaseAddress = HostAddressSpace.TlsBaseAddress;
+     private const ulong TlsSize = 0x0001_0000UL;
+     // The static TLS blocks live at negative offsets from the TCB (FreeBSD
+     // amd64 variant II). Keep every host in sync with GuestTlsTemplate's
+     // startup reservation; PS5 modules routinely reach beyond one host page.
+     private const ulong TlsPrefixSize = GuestTlsTemplate.StartupStaticTlsReservation;
+-    private static readonly ulong BootstrapStubBaseAddress = OperatingSystem.IsWindows() ? 0x7FFD_F000_0000UL : 0x6FFD_F000_0000UL;
+-    private static readonly ulong BootstrapPayloadBaseAddress = OperatingSystem.IsWindows() ? 0x7FFD_E000_0000UL : 0x6FFD_E000_0000UL;
+-    private static readonly ulong DynlibFallbackStubBaseAddress = OperatingSystem.IsWindows() ? 0x7FFD_D000_0000UL : 0x6FFD_D000_0000UL;
+-    private static readonly ulong ReturnToHostStubBaseAddress = OperatingSystem.IsWindows() ? 0x7FFD_C000_0000UL : 0x6FFD_C000_0000UL;
++    private static readonly ulong BootstrapStubBaseAddress = HostAddressSpace.BootstrapStubBaseAddress;
++    private static readonly ulong BootstrapPayloadBaseAddress = HostAddressSpace.BootstrapPayloadBaseAddress;
++    private static readonly ulong DynlibFallbackStubBaseAddress = HostAddressSpace.DynlibFallbackStubBaseAddress;
++    private static readonly ulong ReturnToHostStubBaseAddress = HostAddressSpace.ReturnToHostStubBaseAddress;
+     private const ulong BootstrapRegionSize = 0x0000_1000UL;
+     private const ulong ReturnToHostStubStride = 0x0100_0000UL;
+     private const ulong BootstrapPayloadResultOffset = 0x28UL;
+diff --git a/src/SharpEmu.Core/Cpu/Native/DirectExecutionBackend.cs b/src/SharpEmu.Core/Cpu/Native/DirectExecutionBackend.cs
+index 71e8669..9d4371c 100644
+--- a/src/SharpEmu.Core/Cpu/Native/DirectExecutionBackend.cs
++++ b/src/SharpEmu.Core/Cpu/Native/DirectExecutionBackend.cs
+@@ -14,6 +14,7 @@ using SharpEmu.Core.Cpu.Debugging;
+ using SharpEmu.Core.Loader;
+ using SharpEmu.Core.Memory;
+ using SharpEmu.HLE;
++using SharpEmu.HLE.Host;
+ using SharpEmu.Libs.Diagnostics;
+ 
+ namespace SharpEmu.Core.Cpu.Native;
+@@ -150,10 +151,12 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
+ 
+ 
+ 	// See CpuDispatcher: the 0x7FFx window is Windows-only; POSIX hosts
+-	// (dyld shared cache, Rosetta 2 runtime) use 0x6FFx instead.
+-	private static readonly ulong GuestThreadStackBaseAddress = OperatingSystem.IsWindows() ? 0x7FFF_E000_0000UL : 0x6FFF_E000_0000UL;
++	// (dyld shared cache, Rosetta 2 runtime) use 0x6FFx instead, and a host
++	// with a narrower user address space than 47 bits gets neither. The whole
++	// family is chosen once at startup - see HostAddressSpace.
++	private static readonly ulong GuestThreadStackBaseAddress = HostAddressSpace.GuestThreadStackBaseAddress;
+ 
+-	private static readonly ulong GuestThreadTlsBaseAddress = OperatingSystem.IsWindows() ? 0x7FFE_0000_0000UL : 0x6FFE_0000_0000UL;
++	private static readonly ulong GuestThreadTlsBaseAddress = HostAddressSpace.GuestThreadTlsBaseAddress;
+ 
+ 	private const ulong GuestThreadStackSize = 0x0020_0000UL;
+ 	private const ulong GuestThreadStackHeadroom = 0x0010_0000UL;
+diff --git a/src/SharpEmu.Core/Loader/SelfLoader.cs b/src/SharpEmu.Core/Loader/SelfLoader.cs
+index ea97203..dfbbb62 100644
+--- a/src/SharpEmu.Core/Loader/SelfLoader.cs
++++ b/src/SharpEmu.Core/Loader/SelfLoader.cs
+@@ -11,6 +11,7 @@ using SharpEmu.Core;
+ using SharpEmu.Core.Cpu;
+ using SharpEmu.Core.Memory;
+ using SharpEmu.HLE;
++using SharpEmu.HLE.Host;
+ 
+ namespace SharpEmu.Core.Loader;
+ 
+@@ -21,7 +22,7 @@ public sealed class SelfLoader : ISelfLoader
+     private const uint Ps5SelfMagic = 0x5414F5EE;
+     private const ulong SelfSegmentFlag = 0x800;
+     private const int PageSize = 0x1000;
+-    private const ulong ImportStubBaseAddress = 0x0000_7000_0000_0000UL;
++    private static readonly ulong ImportStubBaseAddress = HostAddressSpace.ImportStubBaseAddress;
+     private const ulong ImportStubAddressStride = 0x0000_0000_0100_0000UL;
+     private const ulong ImportStubSlotSize = 0x10;
+     private const byte StubTrapOpcode = 0xCC;
+@@ -1803,7 +1804,9 @@ public sealed class SelfLoader : ISelfLoader
+             }
+         }
+ 
+-        throw new InvalidOperationException("Unable to reserve an import stub region in virtual memory.");
++        throw new InvalidOperationException(
++            "Unable to reserve an import stub region in virtual memory. " +
++            HostAddressSpace.Describe());
+     }
+ 
+     private static bool IsAddressRangeMapped(IVirtualMemory virtualMemory, ulong start, ulong size)
+diff --git a/src/SharpEmu.Core/Memory/PhysicalVirtualMemory.cs b/src/SharpEmu.Core/Memory/PhysicalVirtualMemory.cs
+index fe3b026..98ebd4f 100644
+--- a/src/SharpEmu.Core/Memory/PhysicalVirtualMemory.cs
++++ b/src/SharpEmu.Core/Memory/PhysicalVirtualMemory.cs
+@@ -31,7 +31,7 @@ public sealed unsafe class PhysicalVirtualMemory : IVirtualMemory, IGuestMemoryA
+     private long _mappingGeneration;
+     private const ulong PageSize = 0x1000;
+     private const ulong HostAllocationGranularity = 0x10000;
+-    private const ulong GuestAllocationArenaAddress = 0x00006000_0000_0000;
++    private static readonly ulong GuestAllocationArenaAddress = HostAddressSpace.GuestAllocationArenaAddress;
+     // Full C++ runtimes can route large numbers of HLE-backed heap allocations
+     // through this arena. The original 16 MiB capacity could be exhausted
+     // during asset setup, turning a valid allocation request into a null
+diff --git a/src/SharpEmu.Core/Runtime/SharpEmuRuntime.cs b/src/SharpEmu.Core/Runtime/SharpEmuRuntime.cs
+index 2cfc051..db660f9 100644
+--- a/src/SharpEmu.Core/Runtime/SharpEmuRuntime.cs
++++ b/src/SharpEmu.Core/Runtime/SharpEmuRuntime.cs
+@@ -93,26 +93,51 @@ public sealed class SharpEmuRuntime : ISharpEmuRuntime
+             ImportTraceLimit = Math.Max(0, options.ImportTraceLimit),
+             DebugHook = options.DebugHook,
+         };
++        // The NID catalog is pure data (154k entries) and nothing before the loader needs it, so it
++        // is parsed on its own thread while the exports are registered and the HLE is warmed.
++        // SHARPEMU_AEROLIB_PRELOAD=0 keeps the load on this thread, where Aerolib.Instance is read.
++        if (Environment.GetEnvironmentVariable("SHARPEMU_AEROLIB_PRELOAD") != "0")
++        {
++            new Thread(static () => _ = Aerolib.Instance)
++            {
++                IsBackground = true,
++                Name = "aerolib-preload",
++            }.Start();
++        }
++
++        // Pre-reserving every free range of the guest window (64 GiB .. 1008 GiB) is what upstream
++        // does on desktop hosts. On a 39-bit-VA host (Android: 512 GiB of user space) that would
++        // take nearly all of it, including the compact family HostAddressSpace places mid-space and
++        // whatever FEX and bionic map later, so there the guest window is reserved on demand.
+         var virtualMemory = new PhysicalVirtualMemory(
+             viewHost: HostViewMemory.Create(),
+-            preReserveGuestAddressSpace: true);
++            preReserveGuestAddressSpace: !SharpEmu.HLE.Host.HostAddressSpace.UsesCompactLayout);
++        BootTrace.Mark("virtual-memory");
+         var moduleManager = new ModuleManager();
+         // The compile-time generated registry (SharpEmu.SourceGenerators) is the sole
+         // registration source; content tests in SharpEmu.Libs.Tests pin its invariants.
+-        moduleManager.RegisterExports(SharpEmu.Generated.SysAbiExportRegistry.CreateExports(Generation.Gen4 | Generation.Gen5));
++        var exports = SharpEmu.Generated.SysAbiExportRegistry.CreateExports(Generation.Gen4 | Generation.Gen5);
++        BootTrace.Mark("exports-created");
++        moduleManager.RegisterExports(exports);
++        BootTrace.Mark("exports-registered");
+         moduleManager.Freeze();
++        BootTrace.Mark("frozen");
+ 
+         var gpuMemory = new GuestGpuMemory(virtualMemory);
+         GuestGpuMemoryHook.Attach(gpuMemory);
+ 
+         var fileSystem = new PhysicalFileSystem();
++        var cpuDispatcher = new CpuDispatcher(virtualMemory, moduleManager);
++        BootTrace.Mark("cpu-dispatcher");
++        var symbols = Aerolib.Instance;
++        BootTrace.Mark("aerolib");
+ 
+         return new SharpEmuRuntime(
+             new SelfLoader(),
+             virtualMemory,
+-            new CpuDispatcher(virtualMemory, moduleManager),
++            cpuDispatcher,
+             moduleManager,
+-            Aerolib.Instance,
++            symbols,
+             cpuExecutionOptions,
+             fileSystem,
+             gpuMemory,
+@@ -150,6 +175,7 @@ public sealed class SharpEmuRuntime : ISharpEmuRuntime
+     {
+         var normalizedEbootPath = Path.GetFullPath(ebootPath);
+         using var app0Binding = BindApp0Root(normalizedEbootPath);
++        BootTrace.Mark("run");
+         Console.Error.WriteLine($"[RUNTIME] Loading: {ebootPath}");
+         LastExecutionDiagnostics = null;
+         LastExecutionTrace = null;
+diff --git a/src/SharpEmu.HLE/BootTrace.cs b/src/SharpEmu.HLE/BootTrace.cs
+new file mode 100644
+index 0000000..4210197
+--- /dev/null
++++ b/src/SharpEmu.HLE/BootTrace.cs
+@@ -0,0 +1,40 @@
++// Copyright (C) 2026 SharpEmu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++using System.Diagnostics;
++
++namespace SharpEmu.HLE;
++
++/// <summary>
++/// Opt-in boot phase timing (SHARPEMU_BOOT_TRACE=1). Each mark prints the system uptime, so a
++/// line can be lined up with a timestamp taken outside the process (a launcher, a bench script),
++/// plus the milliseconds since the first mark. Off by default and free when off.
++/// </summary>
++public static class BootTrace
++{
++    public static readonly bool Enabled =
++        Environment.GetEnvironmentVariable("SHARPEMU_BOOT_TRACE") == "1";
++
++    private static readonly Stopwatch Clock = Stopwatch.StartNew();
++
++    public static void Mark(string phase)
++    {
++        if (!Enabled)
++        {
++            return;
++        }
++
++        var uptime = "?";
++        try
++        {
++            var text = File.ReadAllText("/proc/uptime");
++            var space = text.IndexOf(' ');
++            uptime = space > 0 ? text[..space] : text.Trim();
++        }
++        catch
++        {
++        }
++
++        Console.Error.WriteLine($"[BOOT] uptime={uptime} t={Clock.Elapsed.TotalMilliseconds:F0}ms {phase}");
++    }
++}
+diff --git a/src/SharpEmu.HLE/Host/Android/AndroidHostAudio.cs b/src/SharpEmu.HLE/Host/Android/AndroidHostAudio.cs
+new file mode 100644
+index 0000000..0262816
+--- /dev/null
++++ b/src/SharpEmu.HLE/Host/Android/AndroidHostAudio.cs
+@@ -0,0 +1,81 @@
++// Copyright (C) 2026 SharpEmu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++namespace SharpEmu.HLE.Host.Android;
++
++/// <summary>
++/// Host audio output for Android, through AAudio.
++/// </summary>
++/// <remarks>
++/// SDL's Linux build knows exactly four audio backends — PipeWire, PulseAudio, JACK and ALSA — and
++/// Android runs none of the three sound servers and does not let an application open the kernel
++/// device: <c>/dev/snd/pcmC0D0p</c> is <c>system:audio</c> and an app's uid is not in group
++/// <c>audio</c>. So <see cref="Sdl.SdlHostAudio"/> cannot be constructed there at all, and
++/// <see cref="Posix.PosixAlsaAudioStream"/> would fail at its first <c>open()</c> for the same
++/// reason. Android routes all application audio through AudioFlinger, and AAudio is the C API for
++/// it.
++///
++/// This implements <see cref="IHostPcmAudioOutput"/> rather than only the stereo PCM16 seam,
++/// because the guest asks for 48000 Hz, 2 channels, float32 and
++/// <c>AAUDIO_FORMAT_PCM_FLOAT</c> is exactly that — so guest float32 passes straight through and
++/// a conversion the narrower path would have done never happens.
++///
++/// Selected by <c>SHARPEMU_HOST_AUDIO=android</c> rather than by a compile-time switch, for the
++/// same reason <c>SharpEmu.Libs.VideoOut.AndroidHostWindow</c> is — it lives in a project this one
++/// does not reference, so it is named rather than linked: the runtime identifier is still
++/// <c>linux-x64</c>, and on a desktop Linux there is no <c>libaaudio.so</c> to P/Invoke, so this
++/// must not be reachable by default.
++/// </remarks>
++internal sealed class AndroidHostAudio : IHostPcmAudioOutput
++{
++    public const string SelectorVariable = "SHARPEMU_HOST_AUDIO";
++
++    /// <summary>
++    /// How much audio the device is asked to hold, in milliseconds. The same variable
++    /// <see cref="Sdl.SdlHostAudio"/> reads, and with the same default, so it stays one knob on
++    /// every platform — and so a build's own <c>meta.json</c> can default it.
++    /// </summary>
++    /// <remarks>
++    /// On AAudio this is not a soft cap the backend polices but the device buffer size itself, set
++    /// with <c>AAudioStream_setBufferSizeInFrames</c>. That depth is what paces the guest, and it
++    /// is what the seam's contract — "may block briefly while the device drains its queue (this is
++    /// what paces the guest's audio loop)" — describes.
++    ///
++    /// <para><b>The waiting is ours, not the driver's.</b> Asking AAudio to block until the device has
++    /// room is the obvious way to get that pacing and is the wrong shape for a guest thread, so
++    /// <see cref="AndroidHostAudioStream"/> writes with a zero timeout and sleeps in a
++    /// one-millisecond retry loop instead. The back-pressure is the same either way — this buffer
++    /// size provides it — and only who does the waiting differs. See
++    /// <c>AndroidHostAudioStream.WriteTimeoutNanoseconds</c> before changing that back.</para>
++    /// </remarks>
++    internal static int TargetLatencyMilliseconds =>
++        int.TryParse(
++            Environment.GetEnvironmentVariable("SHARPEMU_AUDIO_LATENCY_MS"),
++            out var latencyMs) && latencyMs > 0
++            ? latencyMs
++            : 60;
++
++    public string BackendName => "aaudio";
++
++    public static bool IsSelected() =>
++        string.Equals(
++            Environment.GetEnvironmentVariable(SelectorVariable),
++            "android",
++            StringComparison.OrdinalIgnoreCase);
++
++    public IHostAudioStream OpenStereoPcm16Stream(uint sampleRate, int maxQueuedPcmBytes = 32 * 1024)
++    {
++        // The caller's cap is in bytes of stereo PCM16, which is this backend's latency expressed
++        // in the units the older seam speaks. Converted rather than ignored, because a caller that
++        // asks for a deeper bed — AudioOut2, FMOD — is saying something about its own feeder.
++        var bytesPerSecond = Math.Max(1L, (long)sampleRate * 2 * sizeof(short));
++        var latencyMilliseconds = (int)Math.Clamp(
++            Math.Max(maxQueuedPcmBytes, 4 * 1024) * 1_000L / bytesPerSecond,
++            10L,
++            2_000L);
++        return new AndroidHostAudioStream(sampleRate, 2, HostPcmFormat.Signed16, latencyMilliseconds);
++    }
++
++    public IHostAudioStream OpenPcmStream(uint sampleRate, int channels, HostPcmFormat format) =>
++        new AndroidHostAudioStream(sampleRate, channels, format, TargetLatencyMilliseconds);
++}
+diff --git a/src/SharpEmu.HLE/Host/Android/AndroidHostAudioStream.cs b/src/SharpEmu.HLE/Host/Android/AndroidHostAudioStream.cs
+new file mode 100644
+index 0000000..8f7feb3
+--- /dev/null
++++ b/src/SharpEmu.HLE/Host/Android/AndroidHostAudioStream.cs
+@@ -0,0 +1,408 @@
++// Copyright (C) 2026 SharpEmu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++using System.Runtime.InteropServices;
++
++namespace SharpEmu.HLE.Host.Android;
++
++/// <summary>
++/// One open AAudio playback stream.
++/// </summary>
++/// <remarks>
++/// AAudio offers two ways to feed a stream: a data callback, where a driver-owned thread calls the
++/// application every burst, and writes from the caller's own thread. The callback is not available
++/// here — the guest runs under an emulator whose host boundary is one-way, so there is no thread the
++/// device could call back into — so this writes, and <see cref="Submit"/> is what paces the guest,
++/// as the seam specifies: "may block briefly while the device drains its queue (this is what paces
++/// the guest's audio loop)".
++///
++/// <para><b>The write itself is non-blocking and the waiting is ours.</b> Asking AAudio to block
++/// until the device has room is the obvious reading of that contract, and it is the wrong shape for
++/// a guest thread; see <see cref="WriteTimeoutNanoseconds"/>, which is the important comment in this
++/// file.</para>
++///
++/// <para>Disconnection — headphones plugged in, Bluetooth connected, a call arriving — is handled by
++/// reopening underneath rather than by failing the port, so the guest never learns about it. Only
++/// if the reopen fails does <see cref="Submit"/> return false and let the caller pace itself. That
++/// path has never executed: nothing was unplugged while it was being tested.</para>
++/// </remarks>
++internal sealed unsafe class AndroidHostAudioStream : IHostAudioStream
++{
++    private const string Library = "libaaudio.so";
++
++    private const int AAudioOk = 0;
++    private const int AAudioErrorDisconnected = -899;
++    private const int DirectionOutput = 0;
++    private const int FormatPcm16 = 1;
++    private const int FormatPcmFloat = 2;
++    private const int SharingModeShared = 1;
++    private const int PerformanceModeLowLatency = 12;
++    private const int UsageGame = 14;
++
++    /// <summary>
++    /// How long one <c>AAudioStream_write</c> may park the calling thread: not at all.
++    /// </summary>
++    /// <remarks>
++    /// <para>AAudio will happily block the caller until the device has room, and using that as the
++    /// pacing is the obvious reading of this seam's contract. It is the wrong shape here for a
++    /// reason that has nothing to do with audio: the caller is a <i>guest</i> thread, dispatched
++    /// cooperatively, and a guest thread parked inside a host driver call is a slice that does not
++    /// come back. Whatever else is waiting on that thread waits for the device.</para>
++    /// <para>So the driver is never asked to wait. The write is non-blocking, a full device buffer
++    /// simply returns zero frames accepted, and the pacing is a bounded sleep of ours — which is
++    /// exactly the shape <see cref="Sdl.SdlHostAudio"/> uses and exactly what the silent fallback's
++    /// own pacing does. The device buffer, sized from <c>SHARPEMU_AUDIO_LATENCY_MS</c>, still
++    /// provides the back-pressure; the difference is only in who does the waiting, and a managed
++    /// thread asleep in a one-millisecond loop is interruptible in a way one parked inside a driver
++    /// is not. It costs 5.5x the native calls per second and no measurable CPU.</para>
++    /// <para><b>Do not read this class as the reason playback can stop.</b> A stall that looked like
++    /// an audio bug — the stream still STARTED, nothing returning an error, the audio server
++    /// eventually reporting "writeUpMessageQueue(): Queue full. Did client stop? Suspending stream"
++    /// — was traced to the emulator's cooperative resume path instead, where a blocked thread could
++    /// be sent to a continuation it had already run. Changing who waits here moved that failure's
++    /// rate, because it changed how often the audio thread blocks and is resumed; it was never the
++    /// cause, and the audio server's complaint is a consequence of our last write, not a cause of
++    /// it. The android host layer's audio watchdog reports every occurrence.</para>
++    /// </remarks>
++    private const long WriteTimeoutNanoseconds = 0;
++
++    /// <summary>How long to sleep before retrying a device that had no room.</summary>
++    private const int RetrySleepMilliseconds = 1;
++
++    /// <summary>
++    /// How long <see cref="Submit"/> keeps retrying before giving up on the buffer.
++    /// </summary>
++    /// <remarks>
++    /// Matches the other backends' 250 ms. A device that has not taken a frame in a quarter of a
++    /// second is not merely busy, and continuing to wait would turn a device problem into a hung
++    /// guest audio thread.
++    /// </remarks>
++    private const int SubmitDeadlineMilliseconds = 250;
++
++    private readonly object _gate = new();
++    private readonly uint _requestedSampleRate;
++    private readonly int _requestedChannels;
++    private readonly HostPcmFormat _format;
++    private readonly int _latencyMilliseconds;
++
++    private nint _stream;
++    private int _sampleRate;
++    private int _channels;
++    private int _bytesPerFrame;
++    private long _totalSubmittedFrames;
++    private bool _disposed;
++
++    public AndroidHostAudioStream(uint sampleRate, int channels, HostPcmFormat format, int latencyMilliseconds)
++    {
++        if (sampleRate is < 8_000 or > 384_000 || channels is < 1 or > 8)
++        {
++            throw new ArgumentOutOfRangeException(
++                sampleRate is < 8_000 or > 384_000 ? nameof(sampleRate) : nameof(channels));
++        }
++
++        _requestedSampleRate = sampleRate;
++        _requestedChannels = channels;
++        _format = format;
++        _latencyMilliseconds = latencyMilliseconds;
++        Open();
++    }
++
++    /// <summary>Caller holds <see cref="_gate"/>, or is the constructor.</summary>
++    private void Open()
++    {
++        nint builder = 0;
++        var status = AAudio_createStreamBuilder(out builder);
++        if (status != AAudioOk || builder == 0)
++        {
++            throw new InvalidOperationException(
++                $"AAudio_createStreamBuilder failed: {DescribeError(status)}.");
++        }
++
++        try
++        {
++            AAudioStreamBuilder_setSampleRate(builder, checked((int)_requestedSampleRate));
++            AAudioStreamBuilder_setChannelCount(builder, _requestedChannels);
++            AAudioStreamBuilder_setFormat(
++                builder,
++                _format == HostPcmFormat.Float32 ? FormatPcmFloat : FormatPcm16);
++            AAudioStreamBuilder_setDirection(builder, DirectionOutput);
++            AAudioStreamBuilder_setSharingMode(builder, SharingModeShared);
++            AAudioStreamBuilder_setPerformanceMode(builder, PerformanceModeLowLatency);
++            AAudioStreamBuilder_setUsage(builder, UsageGame);
++
++            status = AAudioStreamBuilder_openStream(builder, out var stream);
++            if (status != AAudioOk || stream == 0)
++            {
++                throw new InvalidOperationException(
++                    $"AAudioStreamBuilder_openStream failed: {DescribeError(status)}.");
++            }
++
++            // What the device gave us, which need not be what was asked for: AAudio negotiates,
++            // and LOW_LATENCY in particular can change the burst size underneath. Everything below
++            // is sized from these rather than from the request.
++            _stream = stream;
++            _sampleRate = AAudioStream_getSampleRate(stream);
++            _channels = AAudioStream_getChannelCount(stream);
++            var bytesPerSample = AAudioStream_getFormat(stream) == FormatPcmFloat
++                ? sizeof(float)
++                : sizeof(short);
++            _bytesPerFrame = Math.Max(1, _channels * bytesPerSample);
++
++            var wanted = (long)_sampleRate * _latencyMilliseconds / 1_000L;
++            var capacity = AAudioStream_getBufferCapacityInFrames(stream);
++            if (wanted > 0 && capacity > 0)
++            {
++                AAudioStream_setBufferSizeInFrames(stream, (int)Math.Min(wanted, capacity));
++            }
++
++            status = AAudioStream_requestStart(stream);
++            if (status != AAudioOk)
++            {
++                AAudioStream_close(stream);
++                _stream = 0;
++                throw new InvalidOperationException(
++                    $"AAudioStream_requestStart failed: {DescribeError(status)}.");
++            }
++
++            Console.Error.WriteLine(
++                $"[LOADER][INFO] AAudio stream: {_sampleRate} Hz, {_channels} ch, " +
++                $"{(bytesPerSample == sizeof(float) ? "float32" : "s16")}, " +
++                $"burst {AAudioStream_getFramesPerBurst(stream)} frames, " +
++                $"buffer {AAudioStream_getBufferSizeInFrames(stream)} of {capacity}");
++        }
++        finally
++        {
++            AAudioStreamBuilder_delete(builder);
++        }
++    }
++
++    public int QueuedMilliseconds
++    {
++        get
++        {
++            lock (_gate)
++            {
++                if (_disposed || _stream == 0 || _sampleRate <= 0)
++                {
++                    return -1;
++                }
++
++                // Frames handed to the device minus frames it has played is exactly the cushion
++                // the seam asks about, and both are cheap non-blocking reads.
++                var pending = AAudioStream_getFramesWritten(_stream) - AAudioStream_getFramesRead(_stream);
++                return pending <= 0 ? 0 : (int)(pending * 1_000L / _sampleRate);
++            }
++        }
++    }
++
++    public bool Submit(ReadOnlySpan<byte> pcm)
++    {
++        if (pcm.IsEmpty)
++        {
++            return true;
++        }
++
++        lock (_gate)
++        {
++            if (_disposed || _stream == 0 || _bytesPerFrame <= 0)
++            {
++                return false;
++            }
++
++            var frames = pcm.Length / _bytesPerFrame;
++            if (frames <= 0)
++            {
++                return true;
++            }
++
++            var deadline = Environment.TickCount64 + SubmitDeadlineMilliseconds;
++            var offset = 0;
++            fixed (byte* data = pcm)
++            {
++                while (offset < frames)
++                {
++                    var written = AAudioStream_write(
++                        _stream,
++                        data + (long)offset * _bytesPerFrame,
++                        frames - offset,
++                        WriteTimeoutNanoseconds);
++
++                    if (written < 0)
++                    {
++                        if (written != AAudioErrorDisconnected || !Reopen())
++                        {
++                            return false;
++                        }
++
++                        // The stream underneath is a new one; start this buffer again rather than
++                        // resuming into it, since the device consumed nothing of what was lost.
++                        offset = 0;
++                        continue;
++                    }
++
++                    offset += written;
++                    if (offset >= frames)
++                    {
++                        break;
++                    }
++
++                    if (Environment.TickCount64 >= deadline)
++                    {
++                        // A gap is audible and so is an ever-growing delay. Give the rest of this
++                        // buffer up and let the caller decide; it still gets a true, because what
++                        // was accepted did play.
++                        break;
++                    }
++
++                    // The device is full, which is the normal case and is where this call's pacing
++                    // comes from. Sleeping here rather than inside the driver is the whole point:
++                    // the thread stays ours, and stays interruptible.
++                    Thread.Sleep(RetrySleepMilliseconds);
++                }
++            }
++
++            _totalSubmittedFrames += offset;
++
++            // Everything handed over minus what the device still holds is what the player has
++            // actually heard, which is the one clock that advances at the rate the listener
++            // perceives.
++            if (_sampleRate > 0)
++            {
++                GuestAudioClock.Report(Math.Max(0, AAudioStream_getFramesRead(_stream)) / (double)_sampleRate);
++            }
++
++            return true;
++        }
++    }
++
++    /// <summary>
++    /// Reopens after a disconnect. Caller holds <see cref="_gate"/>.
++    /// </summary>
++    /// <remarks>
++    /// The guest is never told. A PS5 title has no notion of an audio device going away, and the
++    /// honest translation of "the player unplugged their headphones" is that the same stream keeps
++    /// playing somewhere else. If the reopen fails the port degrades to silence rather than
++    /// failing the run, which is what the video path does with a lost surface.
++    /// </remarks>
++    private bool Reopen()
++    {
++        var previous = _stream;
++        _stream = 0;
++        if (previous != 0)
++        {
++            AAudioStream_close(previous);
++        }
++
++        try
++        {
++            Open();
++            Console.Error.WriteLine("[LOADER][INFO] AAudio stream reopened after a device change.");
++            return true;
++        }
++        catch (Exception exception)
++        {
++            Console.Error.WriteLine($"[LOADER][WARN] AAudio stream could not be reopened: {exception.Message}");
++            _stream = 0;
++            return false;
++        }
++    }
++
++    private static string DescribeError(int status)
++    {
++        var text = AAudio_convertResultToText(status);
++        return text == 0
++            ? status.ToString()
++            : $"{Marshal.PtrToStringUTF8(text) ?? status.ToString()} ({status})";
++    }
++
++    public void Dispose()
++    {
++        lock (_gate)
++        {
++            if (_disposed)
++            {
++                return;
++            }
++
++            _disposed = true;
++            if (_stream != 0)
++            {
++                AAudioStream_requestStop(_stream);
++                AAudioStream_close(_stream);
++                _stream = 0;
++            }
++        }
++    }
++
++    [DllImport(Library)]
++    private static extern int AAudio_createStreamBuilder(out nint builder);
++
++    [DllImport(Library)]
++    private static extern void AAudioStreamBuilder_setSampleRate(nint builder, int sampleRate);
++
++    [DllImport(Library)]
++    private static extern void AAudioStreamBuilder_setChannelCount(nint builder, int channelCount);
++
++    [DllImport(Library)]
++    private static extern void AAudioStreamBuilder_setFormat(nint builder, int format);
++
++    [DllImport(Library)]
++    private static extern void AAudioStreamBuilder_setDirection(nint builder, int direction);
++
++    [DllImport(Library)]
++    private static extern void AAudioStreamBuilder_setSharingMode(nint builder, int sharingMode);
++
++    [DllImport(Library)]
++    private static extern void AAudioStreamBuilder_setPerformanceMode(nint builder, int mode);
++
++    [DllImport(Library)]
++    private static extern void AAudioStreamBuilder_setUsage(nint builder, int usage);
++
++    [DllImport(Library)]
++    private static extern int AAudioStreamBuilder_openStream(nint builder, out nint stream);
++
++    [DllImport(Library)]
++    private static extern int AAudioStreamBuilder_delete(nint builder);
++
++    [DllImport(Library)]
++    private static extern int AAudioStream_requestStart(nint stream);
++
++    [DllImport(Library)]
++    private static extern int AAudioStream_requestStop(nint stream);
++
++    [DllImport(Library)]
++    private static extern int AAudioStream_close(nint stream);
++
++    [DllImport(Library)]
++    private static extern int AAudioStream_write(nint stream, void* buffer, int numFrames, long timeoutNanoseconds);
++
++    [DllImport(Library)]
++    private static extern int AAudioStream_setBufferSizeInFrames(nint stream, int numFrames);
++
++    [DllImport(Library)]
++    private static extern int AAudioStream_getBufferSizeInFrames(nint stream);
++
++    [DllImport(Library)]
++    private static extern int AAudioStream_getBufferCapacityInFrames(nint stream);
++
++    [DllImport(Library)]
++    private static extern int AAudioStream_getFramesPerBurst(nint stream);
++
++    [DllImport(Library)]
++    private static extern int AAudioStream_getSampleRate(nint stream);
++
++    [DllImport(Library)]
++    private static extern int AAudioStream_getChannelCount(nint stream);
++
++    [DllImport(Library)]
++    private static extern int AAudioStream_getFormat(nint stream);
++
++    [DllImport(Library)]
++    private static extern long AAudioStream_getFramesRead(nint stream);
++
++    [DllImport(Library)]
++    private static extern long AAudioStream_getFramesWritten(nint stream);
++
++    [DllImport(Library)]
++    private static extern nint AAudio_convertResultToText(int result);
++}
+diff --git a/src/SharpEmu.HLE/Host/Android/AndroidHostInput.cs b/src/SharpEmu.HLE/Host/Android/AndroidHostInput.cs
+new file mode 100644
+index 0000000..aac7fd0
+--- /dev/null
++++ b/src/SharpEmu.HLE/Host/Android/AndroidHostInput.cs
+@@ -0,0 +1,218 @@
++// Copyright (C) 2026 SharpEmu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++using System.Runtime.InteropServices;
++
++namespace SharpEmu.HLE.Host.Android;
++
++/// <summary>
++/// Host gamepad input for Android, read from the process that hosts this one.
++/// </summary>
++/// <remarks>
++/// On every other platform <see cref="WindowHostInput"/> reads through a source the window layer
++/// registers, and on Linux that is the SDL game window pumping SDL's own device events. Android has
++/// no SDL window — <c>SharpEmu.Libs.VideoOut.AndroidHostWindow</c> stands in for one — and it also
++/// has no reachable input device to read: <c>/dev/input/event*</c> nodes are owned by
++/// <c>system:input</c> and an application's uid is not in that group. Nothing here can enumerate a
++/// gamepad.
++///
++/// <para>What can is the Android application this process runs inside, which receives key and motion
++/// events through the ordinary view dispatch. So input arrives the other way round from every other
++/// backend: the host is told, and this asks the host. That inversion is the whole design, and it is
++/// deliberately a poll rather than a callback — a host thread calling into this process would have to
++/// enter guest code, which is the one direction the host's other seams all refuse.</para>
++///
++/// <para><b>The question is asked through a syscall with a magic number</b>, in the range the host
++/// answers for pad state, reached by P/Invoking the C library's own <c>syscall</c> wrapper. There is
++/// no shared library to load and nothing generated: <c>libc</c> is already resolved in this process
++/// and is already how <c>PosixHostStubs</c> reaches a dozen other things.</para>
++///
++/// <para><b>The wire format is versioned and size-checked by the call itself.</b> This structure and
++/// the host's are declared in different repositories that release independently, so a disagreement is
++/// refused and reported rather than read as data. That check is the reason a call was chosen over a
++/// page of shared memory, so <see cref="WireVersion"/> moves whenever a field's meaning does.</para>
++///
++/// <para>Selected by <c>SHARPEMU_HOST_INPUT=android</c> rather than by a compile-time switch, for the
++/// same reason <see cref="AndroidHostAudio"/> is: the runtime identifier is still <c>linux-x64</c>,
++/// and on a desktop Linux this magic number reaches nothing.</para>
++/// </remarks>
++/// <remarks>
++/// Public where <see cref="AndroidHostAudio"/> is internal, and for a mechanical reason rather than a
++/// stylistic one: audio is chosen inside this assembly by the platform, while an input source is
++/// <i>registered</i> by whatever owns the window — which for Android is in a different assembly. It is
++/// the same reason <c>SharpEmu.Libs.Pad.HostWindowInput</c> is public.
++/// </remarks>
++public sealed class AndroidHostInput : IHostWindowInputSource
++{
++    public const string SelectorVariable = "SHARPEMU_HOST_INPUT";
++
++    /// <summary>"PD" in the top sixteen bits, with the command in the low sixteen.</summary>
++    /// <remarks>
++    /// Real Linux x86-64 syscall numbers are all below 1000, so the upper range cannot collide with
++    /// one. The host recognises this range before it looks at its syscall table at all.
++    /// </remarks>
++    private const long Magic = 0x5044_0000;
++
++    private const long CommandRead = Magic | 0;
++    private const long CommandRumble = Magic | 1;
++
++    /// <summary>The generation of <see cref="WireState"/> this understands.</summary>
++    private const uint WireVersion = 1;
++
++    /// <summary>
++    /// One pad, exactly as the host holds it: sticks 0..255 with 128 centred and Y growing downward,
++    /// triggers 0..255.
++    /// </summary>
++    /// <remarks>
++    /// Those are already <see cref="HostGamepadState"/>'s conventions, so nothing between the
++    /// Android input event and the guest's pad data rescales an axis.
++    ///
++    /// <para>The layout is stated explicitly and its size is checked against the host by every read.
++    /// Sequential packing is what C# would have chosen anyway; saying so is what makes it a promise
++    /// rather than a default that a later refactor could quietly change.</para>
++    /// </remarks>
++    [StructLayout(LayoutKind.Sequential, Pack = 1)]
++    private struct WireState
++    {
++        public uint Buttons;
++        public byte LeftX;
++        public byte LeftY;
++        public byte RightX;
++        public byte RightY;
++        public byte LeftTrigger;
++        public byte RightTrigger;
++        public byte Connected;
++        public byte Reserved;
++    }
++
++    /// <summary>
++    /// The C library's syscall wrapper, with six arguments whether or not they are all used.
++    /// </summary>
++    /// <remarks>
++    /// Declared with a fixed arity against a variadic function, which is safe here and only here: the
++    /// x86-64 implementation is hand-written assembly that shuffles its arguments into the kernel's
++    /// registers and reads none of the variadic machinery, so there is no register-count byte for a
++    /// non-variadic call site to have failed to set.
++    /// </remarks>
++    [DllImport("libc", EntryPoint = "syscall", SetLastError = false)]
++    private static extern long Syscall(long number, long a, long b, long c, long d, long e);
++
++    public static bool IsSelected() =>
++        string.Equals(
++            Environment.GetEnvironmentVariable(SelectorVariable),
++            "android",
++            StringComparison.OrdinalIgnoreCase);
++
++    /// <summary>
++    /// True once a read has been refused, after which nothing is asked again.
++    /// </summary>
++    /// <remarks>
++    /// A refusal means the host layer and this payload disagree about the wire format, which is not a
++    /// condition that repairs itself mid-run. Polling on regardless would be a thousand refusals a
++    /// second, each one printing on the host's side.
++    /// </remarks>
++    private bool _givenUp;
++
++    /// <summary>Android has no keyboard to fall back to, so the pad is the whole of the input.</summary>
++    /// <remarks>
++    /// False is what the pad exports want here rather than a limitation: it leaves their keyboard
++    /// contribution at neutral — no buttons, sticks centred — and the gamepad snapshot is then merged
++    /// over the top of it exactly as it is on a desktop with no key held.
++    /// </remarks>
++    public bool HasKeyboardFocus => false;
++
++    public bool IsKeyDown(int virtualKey) => false;
++
++    public int GetGamepadStates(Span<HostGamepadState> destination)
++    {
++        if (_givenUp || destination.IsEmpty)
++        {
++            return 0;
++        }
++
++        WireState wire = default;
++        long written;
++        unsafe
++        {
++            written = Syscall(
++                CommandRead,
++                WireVersion,
++                (long)(nint)(&wire),
++                sizeof(WireState),
++                0,
++                0);
++        }
++
++        if (written < 0)
++        {
++            // The host has already said why on its own side, and it says it once. Repeating it here
++            // would be the same sentence from the other end of the same call.
++            _givenUp = true;
++            return 0;
++        }
++
++        if (written == 0 || wire.Connected == 0)
++        {
++            return 0;
++        }
++
++        destination[0] = new HostGamepadState(
++            Connected: true,
++            Buttons: (HostGamepadButtons)wire.Buttons,
++            LeftX: wire.LeftX,
++            LeftY: wire.LeftY,
++            RightX: wire.RightX,
++            RightY: wire.RightY,
++            LeftTrigger: wire.LeftTrigger,
++            RightTrigger: wire.RightTrigger,
++            // Reported as generic rather than guessed at. The Android input framework names a device
++            // but does not say what layout it presents, and claiming DualSense would have the pad
++            // exports advertise a touchpad and adaptive triggers that nothing here can deliver.
++            Type: HostGamepadType.Generic,
++            Connection: HostGamepadConnection.Unknown);
++        return 1;
++    }
++
++    public string? DescribeConnectedGamepad()
++    {
++        Span<HostGamepadState> one = stackalloc HostGamepadState[1];
++        return GetGamepadStates(one) > 0 ? "Android gamepad" : null;
++    }
++
++    public void SetRumble(byte largeMotor, byte smallMotor)
++    {
++        if (_givenUp)
++        {
++            return;
++        }
++
++        // Returns as soon as the host has recorded it. The host delivers it from a thread of its own
++        // precisely so that this does not wait for a platform call.
++        Syscall(CommandRumble, largeMotor, smallMotor, 0, 0, 0);
++    }
++
++    /// <summary>
++    /// Not forwarded. Android exposes one vibration API and no per-trigger actuator, so an
++    /// approximation here would be indistinguishable from <see cref="SetRumble"/> having been called
++    /// with the louder of the two.
++    /// </summary>
++    public void SetTriggerRumble(byte? leftTrigger, byte? rightTrigger)
++    {
++    }
++
++    /// <summary>Not forwarded. There is no DualSense trigger actuator behind this.</summary>
++    public void SetAdaptiveTriggerEffect(
++        HostAdaptiveTriggerEffect? leftTrigger,
++        HostAdaptiveTriggerEffect? rightTrigger)
++    {
++    }
++
++    /// <summary>Not forwarded. There is no lightbar.</summary>
++    public void SetLightbar(byte red, byte green, byte blue)
++    {
++    }
++
++    public void ResetLightbar()
++    {
++    }
++}
+diff --git a/src/SharpEmu.HLE/Host/HostAddressSpace.cs b/src/SharpEmu.HLE/Host/HostAddressSpace.cs
+new file mode 100644
+index 0000000..3e6cc56
+--- /dev/null
++++ b/src/SharpEmu.HLE/Host/HostAddressSpace.cs
+@@ -0,0 +1,296 @@
++// Copyright (C) 2026 SharpEmu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++using System.Globalization;
++
++namespace SharpEmu.HLE.Host;
++
++/// <summary>
++/// Where SharpEmu parks its own high bookkeeping: the import stub region, the
++/// guest stack and TLS windows, the bootstrap stubs and the guest allocation
++/// arena.
++///
++/// These have always been fixed literals near the top of a 47-bit user address
++/// space, with a Windows arm and a POSIX arm one 16 TiB slot lower. That holds
++/// on every desktop host, but not everywhere: an arm64 Linux kernel built for a
++/// 39-bit VA - the common Android configuration - gives userspace 512 GiB, and
++/// the classic layout sits 229x past that ceiling, so the very first import stub
++/// mapping fails and nothing can load.
++///
++/// So the layout is chosen once, at startup, from the address space the host
++/// actually has. Where the classic layout fits it is used unchanged, down to the
++/// bit - which is every host SharpEmu has run on to date. Where it does not, the
++/// whole family shifts down as one block, preserving every relative offset and
++/// every downward probe window, into the middle of whatever space there is.
++/// </summary>
++public static class HostAddressSpace
++{
++    // The classic anchors. Nothing is mapped at the family top itself; it is the
++    // exclusive ceiling every offset below is measured from.
++    internal const ulong ClassicWindowsFamilyTop = 0x8000_0000_0000UL;
++    internal const ulong ClassicPosixFamilyTop = 0x7000_0000_0000UL;
++
++    // The import stub region is the one member that has never had a Windows arm:
++    // 112 TiB on every host.
++    internal const ulong ClassicImportStubBase = 0x7000_0000_0000UL;
++
++    // ...and the guest allocation arena is at 96 TiB on every host, 16 TiB below
++    // the family, which is why it cannot simply ride the same shift.
++    internal const ulong ClassicGuestAllocationArenaBase = 0x6000_0000_0000UL;
++
++    // Offsets below the family top. These reproduce the historical literals
++    // exactly on both arms - 0x7FFF_F000_0000 / 0x6FFF_F000_0000 and friends.
++    private const ulong StackOffset = 0x0000_1000_0000UL;
++    private const ulong GuestThreadStackOffset = 0x0000_2000_0000UL;
++    private const ulong TlsOffset = 0x0002_0000_0000UL;
++    private const ulong BootstrapStubOffset = 0x0002_1000_0000UL;
++    private const ulong BootstrapPayloadOffset = 0x0002_2000_0000UL;
++    private const ulong DynlibFallbackStubOffset = 0x0002_3000_0000UL;
++    private const ulong ReturnToHostStubOffset = 0x0002_4000_0000UL;
++
++    // Largest region mapped at an offset base, used to work out what the classic
++    // layout's highest touched address actually is.
++    private const ulong MainStackSize = 0x0020_0000UL;
++    private const ulong ImportStubRegionAllowance = 0x0010_0000UL;
++
++    /// <summary>
++    /// Stride between consecutive stack/TLS slot candidates. Every region in the
++    /// family probes downward from its base at this stride.
++    /// </summary>
++    public const ulong GuestThreadRegionStride = 0x0100_0000UL;
++
++    // The family's deepest downward reach is the per-thread TLS window: TlsOffset
++    // plus 1023 slots, a little under 24 GiB. Reserve 32 GiB so the arena has
++    // somewhere to sit below it in the compact layout.
++    internal const ulong ReservationSize = 0x0008_0000_0000UL;
++    private const ulong CompactGuestAllocationArenaOffset = 0x0007_0000_0000UL;
++
++    // Compact layouts round to 16 GiB so the result does not move under ASLR: the
++    // detected ceiling wobbles by a few pages per process and the layout should
++    // not.
++    private const ulong CompactAlignment = 0x0004_0000_0000UL;
++
++    // The compact family has to land clear of everything else this process claims
++    // lower down: the PS5 image and module search window (32-36 GiB, SelfLoader)
++    // and the guest virtual address the kernel compat layer starts handing out
++    // direct/flexible mappings from on POSIX (128 GiB, growing upward - see
++    // KernelMemoryCompatExports.DefaultMapSearchBase). 160 GiB is the floor that
++    // keeps both of those below us.
++    internal const ulong CompactFloor = 0x0028_0000_0000UL;
++
++    // Nothing above 2^48 is a user address anywhere; on x86-64 Linux
++    // /proc/self/maps ends with [vsyscall] at 0xFFFFFFFFFF600000, which is the
++    // kernel's, not ours.
++    private const ulong MaximumPlausibleLimit = 0x0001_0000_0000_0000UL;
++
++    // Classic ceilings, used when the host cannot be asked.
++    internal const ulong ClassicWindowsLimit = 0x0000_7FFF_FFFF_0000UL;
++    internal const ulong ClassicPosixLimit = 0x0000_7FFF_FFFF_F000UL;
++
++    private static readonly Layout Current =
++        Compute(DetectUserAddressSpaceLimit(), OperatingSystem.IsWindows());
++
++    static HostAddressSpace()
++    {
++        if (Current.IsCompact)
++        {
++            // Only ever printed when the layout is not the historical one, so a
++            // desktop run stays exactly as quiet as it was.
++            Console.Error.WriteLine($"[LOADER] {Describe()}");
++        }
++    }
++
++    /// <summary>
++    /// The highest user address this process can expect to map, as measured
++    /// rather than assumed.
++    /// </summary>
++    public static ulong UserAddressSpaceLimit => Current.UserAddressSpaceLimit;
++
++    /// <summary>
++    /// True when the classic 47-bit layout did not fit and the family was shifted
++    /// down to suit a narrower address space.
++    /// </summary>
++    public static bool UsesCompactLayout => Current.IsCompact;
++
++    /// <summary>
++    /// Exclusive ceiling of SharpEmu's high bookkeeping. Every base below is an
++    /// offset from here.
++    /// </summary>
++    public static ulong FamilyTop => Current.FamilyTop;
++
++    /// <summary>Base of the downward import stub probe (SelfLoader).</summary>
++    public static ulong ImportStubBaseAddress => Current.ImportStubBaseAddress;
++
++    /// <summary>Base of the main guest stack probe (CpuDispatcher).</summary>
++    public static ulong StackBaseAddress => Current.StackBaseAddress;
++
++    /// <summary>Base of the main guest TLS probe (CpuDispatcher).</summary>
++    public static ulong TlsBaseAddress => Current.TlsBaseAddress;
++
++    /// <summary>Base of the bootstrap stub probe (CpuDispatcher).</summary>
++    public static ulong BootstrapStubBaseAddress => Current.BootstrapStubBaseAddress;
++
++    /// <summary>Base of the bootstrap payload probe (CpuDispatcher).</summary>
++    public static ulong BootstrapPayloadBaseAddress => Current.BootstrapPayloadBaseAddress;
++
++    /// <summary>Base of the dynlib fallback stub probe (CpuDispatcher).</summary>
++    public static ulong DynlibFallbackStubBaseAddress => Current.DynlibFallbackStubBaseAddress;
++
++    /// <summary>Base of the return-to-host stub probe (CpuDispatcher).</summary>
++    public static ulong ReturnToHostStubBaseAddress => Current.ReturnToHostStubBaseAddress;
++
++    /// <summary>Base of the per-thread guest stack probe (DirectExecutionBackend).</summary>
++    public static ulong GuestThreadStackBaseAddress => Current.GuestThreadStackBaseAddress;
++
++    /// <summary>Base of the per-thread guest TLS probe (DirectExecutionBackend).</summary>
++    public static ulong GuestThreadTlsBaseAddress => Current.TlsBaseAddress;
++
++
++    /// <summary>Base of the small guest allocation arena (PhysicalVirtualMemory).</summary>
++    public static ulong GuestAllocationArenaAddress => Current.GuestAllocationArenaAddress;
++
++    /// <summary>One line naming the chosen layout, for diagnostics.</summary>
++    public static string Describe() =>
++        $"host address space: limit=0x{UserAddressSpaceLimit:X} " +
++        $"layout={(UsesCompactLayout ? "compact" : "classic")} " +
++        $"top=0x{FamilyTop:X} stubs=0x{ImportStubBaseAddress:X} " +
++        $"stack=0x{StackBaseAddress:X} tls=0x{TlsBaseAddress:X} " +
++        $"threads=0x{GuestThreadStackBaseAddress:X} arena=0x{GuestAllocationArenaAddress:X}";
++
++    /// <summary>
++    /// The three values a layout is fully determined by. Split out from the
++    /// properties above so the choice can be exercised for address space sizes
++    /// the test machine does not have.
++    /// </summary>
++    internal readonly record struct Layout(
++        ulong UserAddressSpaceLimit,
++        bool IsCompact,
++        ulong FamilyTop,
++        ulong ImportStubBaseAddress,
++        ulong GuestAllocationArenaAddress)
++    {
++        public ulong StackBaseAddress => FamilyTop - StackOffset;
++
++        public ulong TlsBaseAddress => FamilyTop - TlsOffset;
++
++        public ulong BootstrapStubBaseAddress => FamilyTop - BootstrapStubOffset;
++
++        public ulong BootstrapPayloadBaseAddress => FamilyTop - BootstrapPayloadOffset;
++
++        public ulong DynlibFallbackStubBaseAddress => FamilyTop - DynlibFallbackStubOffset;
++
++        public ulong ReturnToHostStubBaseAddress => FamilyTop - ReturnToHostStubOffset;
++
++        public ulong GuestThreadStackBaseAddress => FamilyTop - GuestThreadStackOffset;
++
++        /// <summary>
++        /// Lowest address any member of the family can probe down to: the
++        /// per-thread TLS window's last slot.
++        /// </summary>
++        public ulong LowestProbedAddress => TlsBaseAddress - (1023 * GuestThreadRegionStride);
++    }
++
++    internal static Layout Compute(ulong userAddressSpaceLimit, bool windows)
++    {
++        var classicFamilyTop = windows ? ClassicWindowsFamilyTop : ClassicPosixFamilyTop;
++
++        // The highest address the classic layout actually touches: the top of the
++        // main guest stack, or the top of the import stub mapping, whichever is
++        // higher. Not the family top, which is never mapped - on Windows that is
++        // 0x8000_0000_0000, above the platform's own ceiling.
++        var classicHighestMapped = Math.Max(
++            classicFamilyTop - StackOffset + MainStackSize,
++            ClassicImportStubBase + ImportStubRegionAllowance);
++
++        if (classicHighestMapped <= userAddressSpaceLimit)
++        {
++            return new Layout(
++                userAddressSpaceLimit,
++                IsCompact: false,
++                classicFamilyTop,
++                ClassicImportStubBase,
++                ClassicGuestAllocationArenaBase);
++        }
++
++        var compactFamilyTop = AlignDown(userAddressSpaceLimit / 2, CompactAlignment);
++        if (compactFamilyTop < CompactFloor + ReservationSize)
++        {
++            throw new InvalidOperationException(
++                $"The host user address space is too small for SharpEmu's layout: " +
++                $"limit=0x{userAddressSpaceLimit:X} gives a reservation top of " +
++                $"0x{compactFamilyTop:X}, which has to be at least " +
++                $"0x{CompactFloor + ReservationSize:X}.");
++        }
++
++        // The import stub region rides the family in the compact layout. On a
++        // 47-bit POSIX host it already shares the family top, so this is the same
++        // arrangement, not a new one.
++        return new Layout(
++            userAddressSpaceLimit,
++            IsCompact: true,
++            compactFamilyTop,
++            compactFamilyTop,
++            compactFamilyTop - CompactGuestAllocationArenaOffset);
++    }
++
++    private static ulong DetectUserAddressSpaceLimit()
++    {
++        if (OperatingSystem.IsWindows())
++        {
++            // Every Windows x64 host gives the same ceiling and the classic
++            // layout is validated there, so do not go looking.
++            return ClassicWindowsLimit;
++        }
++
++        // Linux is the only host that narrows the address space, and it will say
++        // so: the highest mapping in /proc/self/maps is the process stack, which
++        // the kernel places just under the ceiling. macOS has no procfs and falls
++        // through to the classic assumption, which is correct there.
++        return TryReadHighestMappedAddress(out var highest) ? highest : ClassicPosixLimit;
++    }
++
++    private static bool TryReadHighestMappedAddress(out ulong highest)
++    {
++        highest = 0;
++        try
++        {
++            foreach (var line in File.ReadLines("/proc/self/maps"))
++            {
++                var dash = line.IndexOf('-');
++                if (dash <= 0)
++                {
++                    continue;
++                }
++
++                var space = line.IndexOf(' ', dash + 1);
++                if (space < 0)
++                {
++                    continue;
++                }
++
++                if (!ulong.TryParse(
++                        line.AsSpan(dash + 1, space - dash - 1),
++                        NumberStyles.HexNumber,
++                        CultureInfo.InvariantCulture,
++                        out var end))
++                {
++                    continue;
++                }
++
++                if (end <= MaximumPlausibleLimit && end > highest)
++                {
++                    highest = end;
++                }
++            }
++        }
++        catch (Exception exception) when (
++            exception is IOException or UnauthorizedAccessException or NotSupportedException)
++        {
++            return false;
++        }
++
++        return highest != 0;
++    }
++
++    private static ulong AlignDown(ulong value, ulong alignment) => value & ~(alignment - 1);
++}
+diff --git a/src/SharpEmu.HLE/Host/Posix/PosixHostPlatform.cs b/src/SharpEmu.HLE/Host/Posix/PosixHostPlatform.cs
+index 495aee4..7d74e37 100644
+--- a/src/SharpEmu.HLE/Host/Posix/PosixHostPlatform.cs
++++ b/src/SharpEmu.HLE/Host/Posix/PosixHostPlatform.cs
+@@ -1,6 +1,7 @@
+ // Copyright (C) 2026 SharpEmu Emulator Project
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
++using SharpEmu.HLE.Host.Android;
+ using SharpEmu.HLE.Host.Sdl;
+ 
+ namespace SharpEmu.HLE.Host.Posix;
+@@ -13,7 +14,10 @@ internal sealed class PosixHostPlatform : IHostPlatform
+ 
+     public IHostSymbolResolver Symbols { get; } = new PosixHostSymbolResolver();
+ 
+-    public IHostAudioOutput Audio { get; } = new SdlHostAudio();
++    // SDL everywhere it has an audio backend to open, which is everywhere but Android: none of
++    // PipeWire, PulseAudio, JACK or ALSA is reachable there. See AndroidHostAudio.
++    public IHostAudioOutput Audio { get; } =
++        AndroidHostAudio.IsSelected() ? new AndroidHostAudio() : new SdlHostAudio();
+ 
+     public IHostInput Input { get; } = new WindowHostInput();
+ }
+diff --git a/src/SharpEmu.HLE/ModuleManager.LeanWarmup.cs b/src/SharpEmu.HLE/ModuleManager.LeanWarmup.cs
+new file mode 100644
+index 0000000..442e0ac
+--- /dev/null
++++ b/src/SharpEmu.HLE/ModuleManager.LeanWarmup.cs
+@@ -0,0 +1,407 @@
++// Copyright (C) 2026 SharpEmu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++using System.Reflection;
++using System.Reflection.Metadata;
++using System.Reflection.Metadata.Ecma335;
++using System.Runtime.CompilerServices;
++
++namespace SharpEmu.HLE;
++
++// The same guarantee as the legacy warm-up -- every class constructor of an HLE or framework type
++// has run, and every non-generic HLE method has been prepared, before any guest thread exists --
++// at a fraction of its cost, because the work list comes from metadata instead of reflection.
++//
++// * Reflection's GetTypes() loads every type of an assembly and GetConstructors()/GetMethods()
++//   materialise a MethodInfo per method. A boot under FEX spends seconds on that alone. A metadata
++//   token is all RunClassConstructor and PrepareMethod need, and reading tokens loads nothing.
++// * Only types that have something to initialise -- a .cctor, or static fields whose storage the
++//   runtime allocates on first access -- are touched for their initializer. RunClassConstructor on
++//   any other type is a no-op beyond loading it, and type loads already happen on guest threads
++//   (every generic instantiation is loaded lazily), so skipping them changes nothing.
++// * Class constructors still run one at a time, in metadata order, framework first: the same order
++//   the legacy sweep used, so initialisation-order behaviour cannot change. Preparing methods
++//   executes no code, so that part is spread over several threads.
++//
++// SHARPEMU_WARMUP=legacy restores the reflection sweep; SHARPEMU_WARMUP_THREADS=N sets the number of
++// threads that prepare methods (1 = all on the calling thread).
++public sealed partial class ModuleManager
++{
++    internal enum WarmupMode
++    {
++        Lean,
++        Legacy,
++    }
++
++    internal static WarmupMode SelectedWarmupMode =>
++        string.Equals(Environment.GetEnvironmentVariable("SHARPEMU_WARMUP"), "legacy", StringComparison.OrdinalIgnoreCase)
++            ? WarmupMode.Legacy
++            : WarmupMode.Lean;
++
++    internal static int WarmupThreads()
++    {
++        if (int.TryParse(Environment.GetEnvironmentVariable("SHARPEMU_WARMUP_THREADS"), out var requested) && requested >= 1)
++        {
++            return Math.Min(requested, 64);
++        }
++
++        return Math.Clamp(Environment.ProcessorCount - 1, 1, 6);
++    }
++
++    private readonly record struct WarmPlan(Assembly Assembly, int[] InitTypes, int[] Methods);
++
++    private static void WarmLean(Assembly[] hleAssemblies)
++    {
++        // Framework class constructors first, as the legacy sweep did (no methods: the BCL is
++        // ReadyToRun-compiled and far too large to prepare).
++        var frameworkInitialised = 0;
++        foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
++        {
++            var name = assembly.GetName().Name;
++            if (name is null || !IsFrameworkAssembly(name))
++            {
++                continue;
++            }
++
++            if (TryPlan(assembly, includeMethods: false, out var frameworkPlan))
++            {
++                frameworkInitialised += RunInitializers(frameworkPlan, out _);
++            }
++            else
++            {
++                frameworkInitialised += WarmAssemblyByReflection(assembly, includeMethods: false, out _, out _, out _, report: false);
++            }
++        }
++
++        BootTrace.Mark("warm-framework-cctors");
++
++        var plans = new List<WarmPlan>(hleAssemblies.Length);
++        var warmed = 0;
++        var failed = 0;
++        var jitted = 0;
++        var jitFailed = 0;
++        // NativeAOT has no JIT: every method is already machine code, so only the class
++        // constructors are left to warm (and reflecting over methods would only cost time).
++        var includeMethods = RuntimeFeature.IsDynamicCodeCompiled;
++        foreach (var assembly in hleAssemblies)
++        {
++            if (TryPlan(assembly, includeMethods, out var plan))
++            {
++                warmed += RunInitializers(plan, out var threw);
++                failed += threw;
++                plans.Add(plan);
++            }
++            else
++            {
++                warmed += WarmAssemblyByReflection(assembly, includeMethods, out var threw, out var prepared, out var prepareFailed);
++                failed += threw;
++                jitted += prepared;
++                jitFailed += prepareFailed;
++            }
++        }
++
++        if (BootTrace.Enabled)
++        {
++            Console.Error.WriteLine($"[HLE] warm-up assemblies: {string.Join(", ", hleAssemblies.Select(a => a.GetName().Name))}");
++        }
++
++        BootTrace.Mark("warm-hle-cctors");
++
++        var threads = WarmupThreads();
++        var (preparedCount, prepareFailures) = PrepareMethods(plans, threads);
++        jitted += preparedCount;
++        jitFailed += prepareFailures;
++
++        BootTrace.Mark("warm-hle-prepare");
++        var mode = RuntimeFeature.IsDynamicCodeCompiled ? $"lean warm-up, {threads} thread(s)" : "lean warm-up, NativeAOT";
++        Console.Error.WriteLine(
++            $"[HLE] Warmed {warmed} type initializers ({failed} threw) + JIT-compiled {jitted} methods ({jitFailed} skipped) across {hleAssemblies.Length} HLE assemblies, plus {frameworkInitialised} framework type initializers ({mode}).");
++    }
++
++    // The work list of one assembly, from its metadata. False when the runtime will not hand out
++    // the metadata (the caller falls back to reflection for that assembly).
++    private static unsafe bool TryPlan(Assembly assembly, bool includeMethods, out WarmPlan plan)
++    {
++        plan = default;
++        byte* blob;
++        int length;
++        try
++        {
++            if (!assembly.TryGetRawMetadata(out blob, out length))
++            {
++                return false;
++            }
++        }
++        catch
++        {
++            return false;
++        }
++
++        var reader = new MetadataReader(blob, length);
++        var initTypes = new List<int>();
++        var methods = includeMethods ? new List<int>() : null;
++        foreach (var typeHandle in reader.TypeDefinitions)
++        {
++            // Row 1 is <Module>, which GetTypes() never returned.
++            if (MetadataTokens.GetRowNumber(typeHandle) == 1)
++            {
++                continue;
++            }
++
++            var type = reader.GetTypeDefinition(typeHandle);
++
++            // Type.ContainsGenericParameters for a definition: a nested type of a generic type
++            // redeclares its parent's parameters, so this covers those too.
++            if (type.GetGenericParameters().Count > 0)
++            {
++                continue;
++            }
++
++            var needsInit = false;
++            foreach (var methodHandle in type.GetMethods())
++            {
++                var method = reader.GetMethodDefinition(methodHandle);
++                if (!needsInit && reader.StringComparer.Equals(method.Name, ".cctor"))
++                {
++                    needsInit = true;
++                }
++
++                if (methods is null ||
++                    (method.Attributes & MethodAttributes.Abstract) != 0 ||
++                    (method.ImplAttributes & MethodImplAttributes.InternalCall) != 0 ||
++                    method.GetGenericParameters().Count > 0)
++                {
++                    continue;
++                }
++
++                methods.Add(MetadataTokens.GetToken(methodHandle));
++            }
++
++            if (!needsInit)
++            {
++                foreach (var fieldHandle in type.GetFields())
++                {
++                    var attributes = reader.GetFieldDefinition(fieldHandle).Attributes;
++                    if ((attributes & (FieldAttributes.Static | FieldAttributes.Literal)) == FieldAttributes.Static)
++                    {
++                        needsInit = true;
++                        break;
++                    }
++                }
++            }
++
++            if (needsInit)
++            {
++                initTypes.Add(MetadataTokens.GetToken(typeHandle));
++            }
++        }
++
++        plan = new WarmPlan(assembly, initTypes.ToArray(), methods?.ToArray() ?? Array.Empty<int>());
++        return true;
++    }
++
++    private static int RunInitializers(in WarmPlan plan, out int failed)
++    {
++        failed = 0;
++        var warmed = 0;
++        var module = plan.Assembly.ManifestModule.ModuleHandle;
++        foreach (var token in plan.InitTypes)
++        {
++            try
++            {
++                RuntimeHelpers.RunClassConstructor(module.ResolveTypeHandle(token));
++                warmed++;
++            }
++            catch (Exception ex)
++            {
++                // A throw here beats a guest-thread fail-fast later; swallow and continue.
++                failed++;
++                ReportThrow(plan.Assembly, $"0x{token:X8}", ex);
++            }
++        }
++
++        return warmed;
++    }
++
++    private static (int Prepared, int Failed) PrepareMethods(List<WarmPlan> plans, int threads)
++    {
++        var total = 0;
++        foreach (var plan in plans)
++        {
++            total += plan.Methods.Length;
++        }
++
++        var modules = new ModuleHandle[total];
++        var tokens = new int[total];
++        var next = 0;
++        foreach (var plan in plans)
++        {
++            var module = plan.Assembly.ManifestModule.ModuleHandle;
++            foreach (var token in plan.Methods)
++            {
++                modules[next] = module;
++                tokens[next] = token;
++                next++;
++            }
++        }
++
++        var prepared = 0;
++        var failed = 0;
++        var cursor = 0;
++        const int Chunk = 64;
++
++        void Drain()
++        {
++            var localPrepared = 0;
++            var localFailed = 0;
++            while (true)
++            {
++                var start = Interlocked.Add(ref cursor, Chunk) - Chunk;
++                if (start >= total)
++                {
++                    break;
++                }
++
++                var end = Math.Min(start + Chunk, total);
++                for (var i = start; i < end; i++)
++                {
++                    try
++                    {
++                        RuntimeHelpers.PrepareMethod(modules[i].ResolveMethodHandle(tokens[i]));
++                        localPrepared++;
++                    }
++                    catch
++                    {
++                        localFailed++;
++                    }
++                }
++            }
++
++            Interlocked.Add(ref prepared, localPrepared);
++            Interlocked.Add(ref failed, localFailed);
++        }
++
++        if (threads <= 1 || total < Chunk * 2)
++        {
++            Drain();
++            return (prepared, failed);
++        }
++
++        var workers = new Thread[threads - 1];
++        for (var i = 0; i < workers.Length; i++)
++        {
++            workers[i] = new Thread(Drain, maxStackSize: 1024 * 1024)
++            {
++                IsBackground = true,
++                Name = $"hle-warmup-{i + 1}",
++            };
++            workers[i].Start();
++        }
++
++        Drain();
++        foreach (var worker in workers)
++        {
++            worker.Join();
++        }
++
++        return (prepared, failed);
++    }
++
++    // Under SHARPEMU_BOOT_TRACE=1, which initializer threw and why: a type whose .cctor throws here
++    // throws TypeInitializationException at every later use, so the list is the triage list.
++    private static void ReportThrow(Assembly assembly, string type, Exception ex)
++    {
++        if (!BootTrace.Enabled)
++        {
++            return;
++        }
++
++        var root = ex is TypeInitializationException { InnerException: { } inner } ? inner : ex;
++        Console.Error.WriteLine($"[HLE] cctor threw: {assembly.GetName().Name}!{type}: {root.GetType().Name}: {root.Message}");
++    }
++
++    // The legacy per-assembly sweep, for an assembly whose metadata the runtime will not expose.
++    private static int WarmAssemblyByReflection(Assembly assembly, bool includeMethods, out int failed, out int prepared, out int prepareFailed, bool report = true)
++    {
++        failed = 0;
++        prepared = 0;
++        prepareFailed = 0;
++        var warmed = 0;
++        Type[] types;
++        try
++        {
++            types = assembly.GetTypes();
++        }
++        catch (ReflectionTypeLoadException ex)
++        {
++            types = ex.Types.Where(t => t is not null).ToArray()!;
++        }
++        catch
++        {
++            return 0;
++        }
++
++        const BindingFlags allMembers = BindingFlags.Public | BindingFlags.NonPublic |
++            BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly;
++
++        foreach (var type in types)
++        {
++            if (type is null || type.ContainsGenericParameters)
++            {
++                continue;
++            }
++
++            try
++            {
++                RuntimeHelpers.RunClassConstructor(type.TypeHandle);
++                warmed++;
++            }
++            catch (Exception ex)
++            {
++                failed++;
++                // framework types throw here by the hundred under NativeAOT ("missing native code"):
++                // their statics were preinitialised at compile time or are never touched, so only
++                // the HLE side is worth naming.
++                if (report)
++                {
++                    ReportThrow(assembly, type.FullName ?? type.Name, ex);
++                }
++            }
++
++            if (!includeMethods)
++            {
++                continue;
++            }
++
++            MethodBase[] members;
++            try
++            {
++                members = type.GetConstructors(allMembers).Concat<MethodBase>(type.GetMethods(allMembers)).ToArray();
++            }
++            catch
++            {
++                continue;
++            }
++
++            foreach (var member in members)
++            {
++                if (member.ContainsGenericParameters || member.IsAbstract || member.MethodImplementationFlags.HasFlag(MethodImplAttributes.InternalCall))
++                {
++                    continue;
++                }
++
++                try
++                {
++                    RuntimeHelpers.PrepareMethod(member.MethodHandle);
++                    prepared++;
++                }
++                catch
++                {
++                    prepareFailed++;
++                }
++            }
++        }
++
++        return warmed;
++    }
++}
+diff --git a/src/SharpEmu.HLE/ModuleManager.cs b/src/SharpEmu.HLE/ModuleManager.cs
+index 3025c84..96d90d5 100644
+--- a/src/SharpEmu.HLE/ModuleManager.cs
++++ b/src/SharpEmu.HLE/ModuleManager.cs
+@@ -7,7 +7,7 @@ using System.Runtime.CompilerServices;
+ 
+ namespace SharpEmu.HLE;
+ 
+-public sealed class ModuleManager : IModuleManager
++public sealed partial class ModuleManager : IModuleManager
+ {
+     private readonly ConcurrentDictionary<string, Delegate> _dispatchTable = new(StringComparer.Ordinal);
+     private readonly ConcurrentDictionary<string, ExportedFunction> _exportTable = new(StringComparer.Ordinal);
+@@ -69,8 +69,21 @@ public sealed class ModuleManager : IModuleManager
+             _warmupAssemblies.CopyTo(assemblies);
+         }
+ 
++        BootTrace.Mark("warm-start");
+         assemblies = WithGuestReachableDependencies(assemblies);
++        BootTrace.Mark("warm-dependencies-resolved");
++        if (SelectedWarmupMode == WarmupMode.Lean)
++        {
++            WarmLean(assemblies);
++            return;
++        }
++
+         var bclWarmed = WarmFrameworkTypeInitializers();
++        BootTrace.Mark("warm-framework-cctors");
++        var cctorTicks = 0L;
++        var prepareTicks = 0L;
++        var reflectTicks = 0L;
++        var phase = System.Diagnostics.Stopwatch.StartNew();
+ 
+         var warmed = 0;
+         var failed = 0;
+@@ -79,6 +92,7 @@ public sealed class ModuleManager : IModuleManager
+         foreach (var assembly in assemblies)
+         {
+             Type[] types;
++            phase.Restart();
+             try
+             {
+                 types = assembly.GetTypes();
+@@ -87,6 +101,7 @@ public sealed class ModuleManager : IModuleManager
+             {
+                 types = ex.Types.Where(t => t is not null).ToArray()!;
+             }
++            reflectTicks += phase.ElapsedTicks;
+ 
+             const BindingFlags allMembers = BindingFlags.Public | BindingFlags.NonPublic |
+                 BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly;
+@@ -98,6 +113,7 @@ public sealed class ModuleManager : IModuleManager
+                     continue;
+                 }
+ 
++                phase.Restart();
+                 try
+                 {
+                     RuntimeHelpers.RunClassConstructor(type.TypeHandle);
+@@ -108,6 +124,8 @@ public sealed class ModuleManager : IModuleManager
+                     // A throw here beats a guest-thread fail-fast later; swallow and continue.
+                     failed++;
+                 }
++                cctorTicks += phase.ElapsedTicks;
++                phase.Restart();
+ 
+                 // Force-JIT (not execute) every method so no guest thread compiles one first.
+                 MethodBase[] members;
+@@ -121,6 +139,8 @@ public sealed class ModuleManager : IModuleManager
+                 {
+                     continue;
+                 }
++                reflectTicks += phase.ElapsedTicks;
++                phase.Restart();
+ 
+                 foreach (var member in members)
+                 {
+@@ -139,11 +159,18 @@ public sealed class ModuleManager : IModuleManager
+                         jitFailed++;
+                     }
+                 }
++                prepareTicks += phase.ElapsedTicks;
+             }
+         }
+ 
++        if (BootTrace.Enabled)
++        {
++            double Ms(long ticks) => ticks * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
++            BootTrace.Mark($"warm-hle reflect={Ms(reflectTicks):F0}ms cctors={Ms(cctorTicks):F0}ms prepare={Ms(prepareTicks):F0}ms");
++        }
++
+         Console.Error.WriteLine(
+-            $"[HLE] Warmed {warmed} type initializers ({failed} threw) + JIT-compiled {jitted} methods ({jitFailed} skipped) across {assemblies.Length} HLE assemblies, plus {bclWarmed} framework type initializers.");
++            $"[HLE] Warmed {warmed} type initializers ({failed} threw) + JIT-compiled {jitted} methods ({jitFailed} skipped) across {assemblies.Length} HLE assemblies, plus {bclWarmed} framework type initializers (legacy warm-up).");
+     }
+ 
+     // Framework .cctors too (but not JIT — the BCL is too large).
+@@ -206,6 +233,20 @@ public sealed class ModuleManager : IModuleManager
+             result[assembly.FullName ?? assembly.GetName().Name ?? string.Empty] = assembly;
+         }
+ 
++        // NativeAOT keeps no assembly references (GetReferencedAssemblies() is empty there), but every
++        // assembly it compiled in is already loaded, so the same filter runs over the loaded set.
++        if (!RuntimeFeature.IsDynamicCodeCompiled)
++        {
++            foreach (var loaded in AppDomain.CurrentDomain.GetAssemblies())
++            {
++                var name = loaded.GetName().Name;
++                if (name is not null && IsGuestReachableInterop(name))
++                {
++                    result[loaded.FullName ?? name] = loaded;
++                }
++            }
++        }
++
+         foreach (var assembly in scanned)
+         {
+             AssemblyName[] references;
+diff --git a/src/SharpEmu.Libs/Gpu/Buffers/GpuMemorySlabs.cs b/src/SharpEmu.Libs/Gpu/Buffers/GpuMemorySlabs.cs
+index acf45d1..2ff03d6 100644
+--- a/src/SharpEmu.Libs/Gpu/Buffers/GpuMemorySlabs.cs
++++ b/src/SharpEmu.Libs/Gpu/Buffers/GpuMemorySlabs.cs
+@@ -31,6 +31,16 @@ internal sealed unsafe class GpuMemorySlabs
+     public readonly record struct Block(DeviceMemory Memory, ulong Offset, ulong Size, nint MappedAddress, uint MemoryType, bool DeviceAddress, bool Recycled)
+     {
+         public byte* Mapped => (byte*)MappedAddress;
++
++        // Written out because the synthesized one prints the byte* property above, and NativeAOT's
++        // ILC (10.0.3) cannot compile that (InvalidCastException in ILImporter.ImportCall) once
++        // SharpEmu.Libs is rooted for the AOT warm-up. Same members, minus the pointer.
++        private bool PrintMembers(System.Text.StringBuilder builder)
++        {
++            builder.Append($"Memory = {Memory.Handle}, Offset = {Offset}, Size = {Size}, MappedAddress = {MappedAddress}, ");
++            builder.Append($"MemoryType = {MemoryType}, DeviceAddress = {DeviceAddress}, Recycled = {Recycled}");
++            return true;
++        }
+     }
+ 
+     private sealed class Pool
+diff --git a/src/SharpEmu.Libs/Kernel/KernelPthreadExtendedCompatExports.cs b/src/SharpEmu.Libs/Kernel/KernelPthreadExtendedCompatExports.cs
+index 16b86ca..06d1783 100644
+--- a/src/SharpEmu.Libs/Kernel/KernelPthreadExtendedCompatExports.cs
++++ b/src/SharpEmu.Libs/Kernel/KernelPthreadExtendedCompatExports.cs
+@@ -2,6 +2,7 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
+ using SharpEmu.HLE;
++using SharpEmu.HLE.Host;
+ using System.Buffers.Binary;
+ using System.Collections.Concurrent;
+ using System.Text;
+@@ -583,9 +584,13 @@ public static class KernelPthreadExtendedCompatExports
+ 			return false;
+ 		}
+ 
+-		var highestStack = OperatingSystem.IsWindows()
+-			? 0x00007FFF_F000_0000UL
+-			: 0x00006FFF_F000_0000UL;
++		// The main guest stack anchor, which is where this window has always been
++		// measured from: 16 slots above the base DirectExecutionBackend hands
++		// native guest thread stacks out from, so the 63 strides below reach the
++		// first 32 of them. Wherever HostAddressSpace put it - 0x7FFF_F000_0000 on
++		// Windows, 0x6FFF_F000_0000 on a 47-bit POSIX host, lower on a host with
++		// less address space than that.
++		var highestStack = HostAddressSpace.StackBaseAddress;
+ 		var lowestStack = highestStack - (63 * NativeGuestStackStride);
+ 		if (candidate < lowestStack || candidate > highestStack)
+ 		{
+diff --git a/src/SharpEmu.Libs/VideoOut/AndroidHostWindow.cs b/src/SharpEmu.Libs/VideoOut/AndroidHostWindow.cs
+new file mode 100644
+index 0000000..8ec931e
+--- /dev/null
++++ b/src/SharpEmu.Libs/VideoOut/AndroidHostWindow.cs
+@@ -0,0 +1,257 @@
++// Copyright (C) 2026 SharpEmu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++using System.Runtime.InteropServices;
++using SharpEmu.HLE.Host;
++using SharpEmu.HLE.Host.Android;
++using Silk.NET.Vulkan;
++
++namespace SharpEmu.Libs.VideoOut;
++
++/// <summary>
++/// A host window for Android, where there is no windowing system to open.
++/// </summary>
++/// <remarks>
++/// SDL's Linux build has X11, Wayland and KMSDRM video drivers and Android has none of them, so
++/// <see cref="SdlHostWindow"/> cannot be constructed there at all: it throws "No available video
++/// device" before the presenter makes its first Vulkan call.
++///
++/// This asks for a surface through <c>VK_EXT_headless_surface</c> instead, which is a standard
++/// extension meaning "a surface with no window". On Android the host supplies that extension and
++/// owns the swapchain behind it, so what the presenter draws into is a real set of images with a
++/// real present that blocks until the frame is done; where those images end up is the host's
++/// business and not visible from here.
++///
++/// Selected by <c>SHARPEMU_HOST_WINDOW=android</c> rather than by a compile-time switch, because
++/// the runtime identifier is still <c>linux-x64</c> and nothing about this build is Android.
++/// </remarks>
++internal sealed unsafe class AndroidHostWindow : IHostWindow
++{
++    public const string SelectorVariable = "SHARPEMU_HOST_WINDOW";
++
++    /// <summary>
++    /// <c>WIDTHxHEIGHT</c>, the size of the surface the host layer is presenting into.
++    /// </summary>
++    /// <remarks>
++    /// The host is the only thing that knows this. It has an <c>ANativeWindow</c> and this process
++    /// does not, and a window whose <see cref="PixelSize"/> disagrees with the surface makes
++    /// <see cref="VulkanVideoPresenter"/> conclude the drawable was resized on every single frame,
++    /// so it recreates its swapchain forever and never renders — silently, without any call
++    /// returning an error. Until now the two agreed only because both were set to 1920x1080 by
++    /// hand.
++    /// </remarks>
++    public const string SizeVariable = "SHARPEMU_HOST_WINDOW_SIZE";
++
++    private const uint HeadlessSurfaceCreateInfoExt = 1000256000;
++
++    private readonly HostVideoOptions _options;
++    private readonly List<nint> _extensionStrings = new();
++    private nint _extensionArray;
++    private int _closeRequested;
++    private bool _disposed;
++
++    /// <summary>
++    /// The pad, registered for as long as this window exists, or null where the host does not offer
++    /// one.
++    /// </summary>
++    /// <remarks>
++    /// The window owns this because the input seam is the window layer's to fill: on Linux
++    /// <see cref="SdlHostWindow"/> connects SDL's, and the pad exports reach whichever is registered
++    /// through <see cref="HostWindowInputSource"/> without knowing which platform answered. Android
++    /// has no window to pump events from and no readable input device, so what stands in is a poll of
++    /// the host — see <see cref="AndroidHostInput"/>.
++    /// </remarks>
++    private readonly AndroidHostInput? _input;
++
++    public AndroidHostWindow(string title, HostVideoOptions options)
++    {
++        _options = ApplyHostSize(options).Normalize();
++        // registered before anything renders, because a guest that reaches its pad initialisation
++        // before its first frame — which several do — would otherwise find no source and cache the
++        // absence.
++        if (AndroidHostInput.IsSelected())
++        {
++            _input = new AndroidHostInput();
++            HostWindowInputSource.Set(_input);
++        }
++
++        Console.Error.WriteLine(
++            $"[LOADER][INFO] Android host window ready (headless surface): " +
++            $"size={_options.Width}x{_options.Height} title=\"{title}\" " +
++            $"pad={(_input is null ? "none" : "host")}");
++    }
++
++    public static bool IsSelected() =>
++        string.Equals(
++            Environment.GetEnvironmentVariable(SelectorVariable),
++            "android",
++            StringComparison.OrdinalIgnoreCase);
++
++    /// <summary>
++    /// Takes the presentation size from the host layer when it has told us one, and leaves the
++    /// configured size alone when it has not.
++    /// </summary>
++    /// <remarks>
++    /// A malformed value is ignored rather than thrown on. This is read from the environment on a
++    /// path that runs before anything can report an error usefully, and the configured size is a
++    /// perfectly good answer — the failure it would cause is visible immediately, as a window that
++    /// renders nothing.
++    /// </remarks>
++    private static HostVideoOptions ApplyHostSize(HostVideoOptions options)
++    {
++        var text = Environment.GetEnvironmentVariable(SizeVariable);
++        if (string.IsNullOrWhiteSpace(text))
++        {
++            return options;
++        }
++
++        var parts = text.Split('x', 'X');
++        if (parts.Length != 2 ||
++            !int.TryParse(parts[0], out var width) ||
++            !int.TryParse(parts[1], out var height) ||
++            width <= 0 || height <= 0)
++        {
++            Console.Error.WriteLine($"[LOADER][WARN] {SizeVariable}=\"{text}\" is not WIDTHxHEIGHT; ignoring it.");
++            return options;
++        }
++
++        return options with { Width = width, Height = height };
++    }
++
++    public (int Width, int Height) PixelSize => (Math.Max(_options.Width, 1), Math.Max(_options.Height, 1));
++
++    // There is no compositor to be minimised by, no window manager to restore a surface, and no
++    // display to change HDR state. All three are constant.
++    public bool IsMinimized => false;
++
++    public SdlHdrState HdrState => new(false, 1f, 1f);
++
++    public bool ConsumeSurfaceRestore() => false;
++
++    public bool ConsumeHdrStateChange() => false;
++
++    public byte** GetRequiredVulkanInstanceExtensions(out uint count)
++    {
++        if (_extensionArray == 0)
++        {
++            // VK_KHR_surface is genuinely present on the host loader; VK_EXT_headless_surface is
++            // provided by the host layer itself. The presenter appends its own optional
++            // extensions to whatever comes back from here, so this only has to carry the two
++            // that a surface cannot be created without.
++            _extensionStrings.Add(Marshal.StringToHGlobalAnsi("VK_KHR_surface"));
++            _extensionStrings.Add(Marshal.StringToHGlobalAnsi("VK_EXT_headless_surface"));
++            _extensionArray = Marshal.AllocHGlobal(nint.Size * _extensionStrings.Count);
++            for (var i = 0; i < _extensionStrings.Count; i++)
++            {
++                Marshal.WriteIntPtr(_extensionArray, i * nint.Size, _extensionStrings[i]);
++            }
++        }
++
++        count = (uint)_extensionStrings.Count;
++        return (byte**)_extensionArray;
++    }
++
++    public SurfaceKHR CreateVulkanSurface(Instance instance)
++    {
++        // Resolved by name rather than through a Silk.NET extension binding, and the structure is
++        // declared here rather than reused, so that this does not depend on the binding package
++        // having chosen to cover VK_EXT_headless_surface.
++        // The presenter builds its own Vk only in Initialize, after this window already exists,
++        // so this asks the loader directly rather than holding a reference it could not have had
++        // at construction time.
++        var vk = Vk.GetApi();
++        var entry = vk.GetInstanceProcAddr(instance, "vkCreateHeadlessSurfaceEXT");
++        var create =
++            (delegate* unmanaged<Instance, HeadlessSurfaceCreateInfo*, void*, SurfaceKHR*, Result>)entry.Handle;
++        if (create is null)
++        {
++            throw new InvalidOperationException(
++                "vkCreateHeadlessSurfaceEXT is unavailable; the host does not provide VK_EXT_headless_surface.");
++        }
++
++        var info = new HeadlessSurfaceCreateInfo
++        {
++            SType = HeadlessSurfaceCreateInfoExt,
++            PNext = null,
++            Flags = 0,
++        };
++
++        SurfaceKHR surface = default;
++        var result = create(instance, &info, null, &surface);
++        if (result != Result.Success || surface.Handle == 0)
++        {
++            throw new InvalidOperationException($"vkCreateHeadlessSurfaceEXT failed: {result}");
++        }
++
++        Console.Error.WriteLine($"[LOADER][INFO] Headless Vulkan surface created: {surface.Handle:X}");
++        return surface;
++    }
++
++    public void SetTitle(string title)
++    {
++    }
++
++    public void Close() => Volatile.Write(ref _closeRequested, 1);
++
++    /// <remarks>
++    /// The same shape as <see cref="SdlHostWindow.Run"/> with the event pump removed. There is no
++    /// throttle here on purpose: the host's present blocks until the frame's own semaphores are
++    /// signalled, so back-pressure comes from the GPU rather than from a sleep.
++    /// </remarks>
++    public void Run(Action initialize, Action<double> render, Action closing, Action? idle = null)
++    {
++        initialize();
++        var timer = System.Diagnostics.Stopwatch.StartNew();
++        var last = timer.Elapsed.TotalSeconds;
++        try
++        {
++            while (Volatile.Read(ref _closeRequested) == 0)
++            {
++                var now = timer.Elapsed.TotalSeconds;
++                render(now - last);
++                last = now;
++                idle?.Invoke();
++            }
++        }
++        finally
++        {
++            closing();
++        }
++    }
++
++    public void Dispose()
++    {
++        if (_disposed)
++        {
++            return;
++        }
++
++        _disposed = true;
++        if (_input is not null)
++        {
++            // Clear compares before it clears, so a source registered after this one is left alone.
++            HostWindowInputSource.Clear(_input);
++        }
++
++        if (_extensionArray != 0)
++        {
++            Marshal.FreeHGlobal(_extensionArray);
++            _extensionArray = 0;
++        }
++
++        foreach (var text in _extensionStrings)
++        {
++            Marshal.FreeHGlobal(text);
++        }
++
++        _extensionStrings.Clear();
++    }
++
++    [StructLayout(LayoutKind.Sequential)]
++    private struct HeadlessSurfaceCreateInfo
++    {
++        public uint SType;
++        public void* PNext;
++        public uint Flags;
++    }
++}
+diff --git a/src/SharpEmu.Libs/VideoOut/IHostWindow.cs b/src/SharpEmu.Libs/VideoOut/IHostWindow.cs
+new file mode 100644
+index 0000000..776ff50
+--- /dev/null
++++ b/src/SharpEmu.Libs/VideoOut/IHostWindow.cs
+@@ -0,0 +1,42 @@
++// Copyright (C) 2026 SharpEmu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++using Silk.NET.Vulkan;
++
++namespace SharpEmu.Libs.VideoOut;
++
++/// <summary>
++/// What the Vulkan presenter needs from the thing it draws into.
++/// </summary>
++/// <remarks>
++/// This is exactly the surface <see cref="VulkanVideoPresenter"/> already used on
++/// <see cref="SdlHostWindow"/>, extracted without changes so that a host with no SDL video
++/// driver can supply its own. SDL remains the implementation everywhere it works;
++/// <see cref="AndroidHostWindow"/> exists because Android has no X11, Wayland or KMSDRM and
++/// SDL's Linux build therefore has no video device to open.
++///
++/// Unsafe because <see cref="GetRequiredVulkanInstanceExtensions"/> hands back the loader's own
++/// array of UTF-8 strings rather than copying it.
++/// </remarks>
++internal unsafe interface IHostWindow : IDisposable
++{
++    (int Width, int Height) PixelSize { get; }
++
++    bool IsMinimized { get; }
++
++    SdlHdrState HdrState { get; }
++
++    bool ConsumeSurfaceRestore();
++
++    bool ConsumeHdrStateChange();
++
++    byte** GetRequiredVulkanInstanceExtensions(out uint count);
++
++    SurfaceKHR CreateVulkanSurface(Instance instance);
++
++    void SetTitle(string title);
++
++    void Close();
++
++    void Run(Action initialize, Action<double> render, Action closing, Action? idle = null);
++}
+diff --git a/src/SharpEmu.Libs/VideoOut/SdlHostWindow.cs b/src/SharpEmu.Libs/VideoOut/SdlHostWindow.cs
+index 8f6ff76..3ff2056 100644
+--- a/src/SharpEmu.Libs/VideoOut/SdlHostWindow.cs
++++ b/src/SharpEmu.Libs/VideoOut/SdlHostWindow.cs
+@@ -22,7 +22,7 @@ internal readonly record struct SdlHdrState(
+     float SdrWhiteLevel,
+     float Headroom);
+ 
+-internal sealed unsafe class SdlHostWindow : IDisposable, IHostGamepadOutput
++internal sealed unsafe class SdlHostWindow : IDisposable, IHostGamepadOutput, IHostWindow
+ {
+     private const SDL_InitFlags InitFlags = SDL_InitFlags.SDL_INIT_VIDEO | SDL_InitFlags.SDL_INIT_GAMEPAD;
+     private static readonly long CursorHideDelayTicks = 2 * Stopwatch.Frequency;
+diff --git a/src/SharpEmu.Libs/VideoOut/VulkanVideoPresenter.Device.Setup.cs b/src/SharpEmu.Libs/VideoOut/VulkanVideoPresenter.Device.Setup.cs
+index 8ae46c5..ea1613b 100644
+--- a/src/SharpEmu.Libs/VideoOut/VulkanVideoPresenter.Device.Setup.cs
++++ b/src/SharpEmu.Libs/VideoOut/VulkanVideoPresenter.Device.Setup.cs
+@@ -21,7 +21,7 @@ internal static unsafe partial class VulkanVideoPresenter
+     {
+         // This partial initializes Vulkan host infrastructure.
+ 
+-        private readonly SdlHostWindow _window;
++        private readonly IHostWindow _window;
+ 
+         private Vk _vk = null!;
+         private KhrSurface _surfaceApi = null!;
+@@ -925,7 +925,17 @@ internal static unsafe partial class VulkanVideoPresenter
+             var supportsTimelineSemaphore = timelineSemaphoreFeatures.TimelineSemaphore;
+             var supportsBufferDeviceAddress = addressFeatures.BufferDeviceAddress;
+             var supportsSharedInt64Atomics = atomicInt64Features.ShaderSharedInt64Atomics;
+-            var supportsMaintenance8 = maintenance8Features.Maintenance8;
++            // A feature bit is not permission to enable the extension that defines it. The spec
++            // requires an extension to be advertised by vkEnumerateDeviceExtensionProperties
++            // before it may appear in ppEnabledExtensionNames, and a driver is free to report a
++            // feature it implements without advertising the extension - Mesa's Turnip does exactly
++            // that for maintenance8. Enabling it anyway fails the whole vkCreateDevice call with
++            // ErrorExtensionNotPresent, which takes the presenter with it.
++            //
++            // Any device that does advertise the extension is unaffected: the check below returns
++            // true and this is the value it always was.
++            var supportsMaintenance8 =
++                maintenance8Features.Maintenance8 && IsDeviceExtensionAvailable("VK_KHR_maintenance8");
+             var supportsRobustBufferAccess2 = robustness2Features.RobustBufferAccess2;
+             var supportsRobustImageAccess2 = robustness2Features.RobustImageAccess2;
+             var supportsNullDescriptor = robustness2Features.NullDescriptor;
+diff --git a/src/SharpEmu.Libs/VideoOut/VulkanVideoPresenter.Present.Overlay.cs b/src/SharpEmu.Libs/VideoOut/VulkanVideoPresenter.Present.Overlay.cs
+index 07324ce..7e4b950 100644
+--- a/src/SharpEmu.Libs/VideoOut/VulkanVideoPresenter.Present.Overlay.cs
++++ b/src/SharpEmu.Libs/VideoOut/VulkanVideoPresenter.Present.Overlay.cs
+@@ -22,6 +22,17 @@ internal static unsafe partial class VulkanVideoPresenter
+         private DeviceMemory[] _overlayStagingMemory = [];
+         private nint[] _overlayStagingMapped = [];
+ 
++        /// <summary>
++        /// The pixel format <see cref="PerfOverlay"/> writes its panel in.
++        /// </summary>
++        /// <remarks>
++        /// Named rather than repeated as a literal because the transfer of that panel onto the
++        /// presentation target has to know whether the two agree: they do on every desktop surface
++        /// and never on an Android one, and the difference decides between a raw copy and a
++        /// converting blit.
++        /// </remarks>
++        private const Format OverlayFormat = Format.B8G8R8A8Unorm;
++
+         private void CreateOverlayResources()
+         {
+             const ulong overlayBytes = PerfOverlay.PixelBufferWidth * PerfOverlay.PixelBufferHeight * 4;
+@@ -29,7 +40,7 @@ internal static unsafe partial class VulkanVideoPresenter
+             {
+                 SType = StructureType.ImageCreateInfo,
+                 ImageType = ImageType.Type2D,
+-                Format = Format.B8G8R8A8Unorm,
++                Format = OverlayFormat,
+                 Extent = new Extent3D(PerfOverlay.PixelBufferWidth, PerfOverlay.PixelBufferHeight, 1),
+                 MipLevels = 1,
+                 ArrayLayers = 1,
+@@ -158,28 +169,74 @@ internal static unsafe partial class VulkanVideoPresenter
+ 
+             var panelWidth = rectangle.Width;
+             var panelHeight = rectangle.Height;
+-            // Source and destination are both B8G8R8A8 and the panel is not
+-            // scaled. MoltenVK has corrupted pixels outside the blit region
+-            // for this transfer-on-swapchain path (horizontal red/yellow
+-            // scanlines across the entire window). An exact image copy has
+-            // the required semantics and avoids the driver's blit conversion
+-            // path altogether.
+-            var copy = new ImageCopy
++            if (PresentationTargetFormat == OverlayFormat)
+             {
+-                SrcSubresource = new ImageSubresourceLayers(ImageAspectFlags.ColorBit, 0, 0, 1),
+-                DstSubresource = new ImageSubresourceLayers(ImageAspectFlags.ColorBit, 0, 0, 1),
+-                SrcOffset = new Offset3D(0, 0, 0),
+-                DstOffset = new Offset3D(rectangle.Left, rectangle.Top, 0),
+-                Extent = new Extent3D((uint)panelWidth, (uint)panelHeight, 1),
+-            };
+-            _vk.CmdCopyImage(
+-                _commandBuffer,
+-                _overlayImage,
+-                ImageLayout.TransferSrcOptimal,
+-                presentationTarget,
+-                ImageLayout.TransferDstOptimal,
+-                1,
+-                &copy);
++                // Source and destination are both B8G8R8A8 and the panel is not
++                // scaled. MoltenVK has corrupted pixels outside the blit region
++                // for this transfer-on-swapchain path (horizontal red/yellow
++                // scanlines across the entire window). An exact image copy has
++                // the required semantics and avoids the driver's blit conversion
++                // path altogether.
++                var copy = new ImageCopy
++                {
++                    SrcSubresource = new ImageSubresourceLayers(ImageAspectFlags.ColorBit, 0, 0, 1),
++                    DstSubresource = new ImageSubresourceLayers(ImageAspectFlags.ColorBit, 0, 0, 1),
++                    SrcOffset = new Offset3D(0, 0, 0),
++                    DstOffset = new Offset3D(rectangle.Left, rectangle.Top, 0),
++                    Extent = new Extent3D((uint)panelWidth, (uint)panelHeight, 1),
++                };
++                _vk.CmdCopyImage(
++                    _commandBuffer,
++                    _overlayImage,
++                    ImageLayout.TransferSrcOptimal,
++                    presentationTarget,
++                    ImageLayout.TransferDstOptimal,
++                    1,
++                    &copy);
++            }
++            else
++            {
++                // The presentation target is not B8G8R8A8, so the copy above would
++                // reinterpret the overlay's bytes rather than convert them and the
++                // panel would render with its red and blue channels exchanged.
++                // vkCmdCopyImage is a raw byte transfer; vkCmdBlitImage matches
++                // components by name, which is exactly the channel reorder needed.
++                //
++                // This is reachable wherever the surface exposes no B8G8R8A8 format
++                // at all, which no desktop does and Android always does: an Android
++                // swapchain offers R8G8B8A8 UNORM and SRGB and nothing else, so
++                // ChooseSurfaceFormat falls through to formats[0] and lands on
++                // R8G8B8A8Unorm. The copy path above is left untouched for every
++                // host that does have a matching format, MoltenVK included.
++                var sourceOffsets = new ImageBlit.SrcOffsetsBuffer
++                {
++                    Element0 = new Offset3D(0, 0, 0),
++                    Element1 = new Offset3D(panelWidth, panelHeight, 1),
++                };
++                var destinationOffsets = new ImageBlit.DstOffsetsBuffer
++                {
++                    Element0 = new Offset3D(rectangle.Left, rectangle.Top, 0),
++                    Element1 = new Offset3D(rectangle.Left + panelWidth, rectangle.Top + panelHeight, 1),
++                };
++                var blit = new ImageBlit
++                {
++                    SrcSubresource = new ImageSubresourceLayers(ImageAspectFlags.ColorBit, 0, 0, 1),
++                    SrcOffsets = sourceOffsets,
++                    DstSubresource = new ImageSubresourceLayers(ImageAspectFlags.ColorBit, 0, 0, 1),
++                    DstOffsets = destinationOffsets,
++                };
++                // Nearest, because the regions are the same size: this blit exists
++                // to convert, never to scale.
++                _vk.CmdBlitImage(
++                    _commandBuffer,
++                    _overlayImage,
++                    ImageLayout.TransferSrcOptimal,
++                    presentationTarget,
++                    ImageLayout.TransferDstOptimal,
++                    1,
++                    &blit,
++                    Filter.Nearest);
++            }
+ 
+             var presentationTargetToFinal = new ImageMemoryBarrier2
+             {
+diff --git a/src/SharpEmu.Libs/VideoOut/VulkanVideoPresenter.cs b/src/SharpEmu.Libs/VideoOut/VulkanVideoPresenter.cs
+index 8fd8978..8d0a9f5 100644
+--- a/src/SharpEmu.Libs/VideoOut/VulkanVideoPresenter.cs
++++ b/src/SharpEmu.Libs/VideoOut/VulkanVideoPresenter.cs
+@@ -258,10 +258,15 @@ internal static unsafe partial class VulkanVideoPresenter
+             _hostBufferPool = new VulkanHostBufferPool(
+                 MaximumCachedHostBufferBytes,
+                 DestroyHostBufferAllocation);
+-            _window = new SdlHostWindow(
+-                VideoOutExports.GetWindowTitle(),
+-                _videoOptions,
+-                SdlGraphicsApi.Vulkan);
++            // SDL everywhere it has a video driver to open, which is everywhere but Android.
++            _window = AndroidHostWindow.IsSelected()
++                ? new AndroidHostWindow(
++                    VideoOutExports.GetWindowTitle(),
++                    _videoOptions)
++                : new SdlHostWindow(
++                    VideoOutExports.GetWindowTitle(),
++                    _videoOptions,
++                    SdlGraphicsApi.Vulkan);
+         }
+ 
+         public void Run()
+diff --git a/tests/SharpEmu.Libs.Tests/HostAddressSpaceTests.cs b/tests/SharpEmu.Libs.Tests/HostAddressSpaceTests.cs
+new file mode 100644
+index 0000000..b0f4423
+--- /dev/null
++++ b/tests/SharpEmu.Libs.Tests/HostAddressSpaceTests.cs
+@@ -0,0 +1,104 @@
++// Copyright (C) 2026 SharpEmu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++using SharpEmu.HLE.Host;
++using Xunit;
++
++namespace SharpEmu.Libs.Tests;
++
++/// <summary>
++/// Guards the host address space layout. The classic arm has to keep producing
++/// the literals it always did - those addresses are load bearing on Windows,
++/// Linux and macOS alike - and the compact arm has to land somewhere a narrower
++/// host can actually map, clear of the guest ranges below it.
++/// </summary>
++public sealed class HostAddressSpaceTests
++{
++    // 39-bit arm64 kernel, the Android configuration: the top of the process
++    // stack as /proc/self/maps reports it on a Snapdragon 8 Elite.
++    private const ulong NarrowLimit = 0x0000_007F_CFE9_F000UL;
++
++    [Fact]
++    public void WindowsKeepsTheHistoricalLayout()
++    {
++        var layout = HostAddressSpace.Compute(HostAddressSpace.ClassicWindowsLimit, windows: true);
++
++        Assert.False(layout.IsCompact);
++        Assert.Equal(0x7FFF_F000_0000UL, layout.StackBaseAddress);
++        Assert.Equal(0x7FFE_0000_0000UL, layout.TlsBaseAddress);
++        Assert.Equal(0x7FFD_F000_0000UL, layout.BootstrapStubBaseAddress);
++        Assert.Equal(0x7FFD_E000_0000UL, layout.BootstrapPayloadBaseAddress);
++        Assert.Equal(0x7FFD_D000_0000UL, layout.DynlibFallbackStubBaseAddress);
++        Assert.Equal(0x7FFD_C000_0000UL, layout.ReturnToHostStubBaseAddress);
++        Assert.Equal(0x7FFF_E000_0000UL, layout.GuestThreadStackBaseAddress);
++        Assert.Equal(0x0000_7000_0000_0000UL, layout.ImportStubBaseAddress);
++        Assert.Equal(0x0000_6000_0000_0000UL, layout.GuestAllocationArenaAddress);
++    }
++
++    [Fact]
++    public void PosixWithA47BitAddressSpaceKeepsTheHistoricalLayout()
++    {
++        var layout = HostAddressSpace.Compute(HostAddressSpace.ClassicPosixLimit, windows: false);
++
++        Assert.False(layout.IsCompact);
++        Assert.Equal(0x6FFF_F000_0000UL, layout.StackBaseAddress);
++        Assert.Equal(0x6FFE_0000_0000UL, layout.TlsBaseAddress);
++        Assert.Equal(0x6FFD_F000_0000UL, layout.BootstrapStubBaseAddress);
++        Assert.Equal(0x6FFD_E000_0000UL, layout.BootstrapPayloadBaseAddress);
++        Assert.Equal(0x6FFD_D000_0000UL, layout.DynlibFallbackStubBaseAddress);
++        Assert.Equal(0x6FFD_C000_0000UL, layout.ReturnToHostStubBaseAddress);
++        Assert.Equal(0x6FFF_E000_0000UL, layout.GuestThreadStackBaseAddress);
++        Assert.Equal(0x0000_7000_0000_0000UL, layout.ImportStubBaseAddress);
++        Assert.Equal(0x0000_6000_0000_0000UL, layout.GuestAllocationArenaAddress);
++    }
++
++    [Fact]
++    public void A39BitAddressSpaceGetsACompactLayoutThatFits()
++    {
++        var layout = HostAddressSpace.Compute(NarrowLimit, windows: false);
++
++        Assert.True(layout.IsCompact);
++        Assert.True(layout.FamilyTop < NarrowLimit);
++        Assert.True(layout.ImportStubBaseAddress < NarrowLimit);
++
++        // Every region, and every address the downward probes can reach, stays
++        // inside the reservation.
++        Assert.True(layout.LowestProbedAddress >= layout.FamilyTop - HostAddressSpace.ReservationSize);
++        Assert.True(layout.GuestAllocationArenaAddress >= layout.FamilyTop - HostAddressSpace.ReservationSize);
++        Assert.True(layout.GuestAllocationArenaAddress < layout.LowestProbedAddress);
++    }
++
++    [Fact]
++    public void TheCompactLayoutStaysClearOfTheGuestRanges()
++    {
++        var layout = HostAddressSpace.Compute(NarrowLimit, windows: false);
++        var lowest = layout.FamilyTop - HostAddressSpace.ReservationSize;
++
++        // Ps5ModuleSearchEnd, 36 GiB (SelfLoader), and the POSIX arm of
++        // KernelMemoryCompatExports.DefaultMapSearchBase, 128 GiB, which grows
++        // upward as the guest asks for direct and flexible memory.
++        Assert.True(lowest > 0x0000_0009_0000_0000UL);
++        Assert.True(lowest > 0x0000_0020_0000_0000UL);
++        Assert.True(lowest >= HostAddressSpace.CompactFloor);
++    }
++
++    [Fact]
++    public void TheCompactLayoutDoesNotMoveWithAslr()
++    {
++        // The detected ceiling is the top of the process stack, which the kernel
++        // jitters by a few pages per launch. The layout must not follow it.
++        var low = HostAddressSpace.Compute(NarrowLimit - 0x21_0000UL, windows: false);
++        var high = HostAddressSpace.Compute(NarrowLimit + 0x33_0000UL, windows: false);
++
++        Assert.Equal(low.FamilyTop, high.FamilyTop);
++    }
++
++    [Fact]
++    public void AnAddressSpaceTooSmallForTheLayoutSaysSoRatherThanOverlapping()
++    {
++        // 34 bits. Nothing we target, but silently producing a layout on top of
++        // the guest's own ranges would be far worse than refusing.
++        Assert.Throws<InvalidOperationException>(
++            () => HostAddressSpace.Compute(0x0000_0003_FFFF_F000UL, windows: false));
++    }
++}

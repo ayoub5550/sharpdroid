@@ -113,6 +113,11 @@ def entry():
                         help="publish IL only, compiled by the JIT at every launch, instead of "
                              "ReadyToRun. the payload is smaller and boots several seconds slower "
                              "under translation; there for comparing the two.")
+    parser.add_argument("--nativeaot", action="store_true",
+                        help="publish with NativeAOT instead of ReadyToRun: one native linux-x64 "
+                             "binary with no JIT and no CoreCLR, headless. needs a fork that has "
+                             "the SharpEmuHeadless / SharpEmuNativeAot switches. boots about 3x "
+                             "faster under FEX (docs/performance-roadmap.md); not yet run with a game.")
     parser.add_argument("--compress", action="store_true",
                         help="keep the csproj's single-file compression. the payload on disk is less "
                              "than half the size and every launch spends about 0.45 s on a phone "
@@ -158,11 +163,11 @@ def from_archive(toolchain, arguments):
     the same shape as an unpacked archive, and this is what gives one an identity without a fork
     checkout or a repackage.
     """
-    if arguments.jit or arguments.compress:
+    if arguments.jit or arguments.compress or arguments.nativeaot:
         # an archive is published already, compiled however its producer compiled it. accepting
         # the flag would let a package claim a choice nobody made.
         raise Refusal("{} chooses how the fork is published, and an archive is already "
-                      "published".format("--jit" if arguments.jit else "--compress"))
+                      "published".format("--jit" if arguments.jit else "--nativeaot" if arguments.nativeaot else "--compress"))
     if not arguments.id:
         raise Refusal("--from-archive needs --id: there is no branch to take the build's id from")
     branch = arguments.id
@@ -274,7 +279,9 @@ def from_fork(toolchain, arguments):
     # is two fields, and every publish of that era was a JIT one. the packing is the fourth field for
     # the same reason, and a stamp from before it was recorded is three: every publish of that era
     # kept the csproj's compression.
-    mode = "jit" if arguments.jit else "readytorun"
+    if arguments.jit and arguments.nativeaot:
+        raise Refusal("--jit and --nativeaot are two different payloads; pass one of them")
+    mode = "jit" if arguments.jit else "nativeaot" if arguments.nativeaot else "readytorun"
     packing = "compressed" if arguments.compress else "uncompressed"
     identity = "{} {} {} {}".format(branch, commit, mode, packing)
 
@@ -306,14 +313,34 @@ def from_fork(toolchain, arguments):
         # the same reason build-format.md gives for the asset being a tree rather than a zip. what
         # is left is the copy on the device, 197 MB rather than 87, which is paid once per build
         # rather than once per launch. --compress keeps the csproj's setting, for comparing.
+        # the project by its path *relative to the fork*, run from the fork's root. given the same
+        # project by absolute path, a fork checked out as a git worktree (…/.worktrees/<name>)
+        # compiles every library and then fails the CLI with CS0234, its transitive project
+        # references gone; relative, the same checkout publishes cleanly.
         command = [toolchain.dotnet, "publish",
-                   str(fork / "src" / "SharpEmu.CLI" / "SharpEmu.CLI.csproj"),
+                   str(Path("src") / "SharpEmu.CLI" / "SharpEmu.CLI.csproj"),
                    "-c", "Release", "-r", "linux-x64"]
-        if not arguments.jit:
+        if arguments.nativeaot:
+            # **NativeAOT: no JIT at all.** what ReadyToRun leaves to the JIT -- about 700 methods a
+            # boot, plus every tiering rejit, each one code FEX then has to translate and track as
+            # SMC -- is gone, and so is CoreCLR's own startup. measured to the refusal of a fake
+            # eboot: 2.07 -> 0.67 s cold and 1.25 -> 0.47 s with a warm code cache on an arm64
+            # Android 15 device under FEX, 91.6-94.8 -> 25.4 s in the VM, SMC write faults 2,999 ->
+            # 0. the fork's csproj owns the switches (PublishAot is set there, not here: a global
+            # PublishAot leaks into its netstandard source generator). the linker is gcc where
+            # clang is missing, which is what ILC defaults to.
+            csproj = fork / "src" / "SharpEmu.CLI" / "SharpEmu.CLI.csproj"
+            if "SharpEmuNativeAot" not in csproj.read_text(encoding="utf-8"):
+                raise Refusal("{} has no SharpEmuNativeAot switch -- --nativeaot needs a fork branch "
+                              "that has it (perf/android/nativeaot-v2 or later)".format(csproj))
+            command += ["-p:SharpEmuHeadless=true", "-p:SharpEmuNativeAot=true"]
+            if not shutil.which("clang"):
+                command.append("-p:CppCompilerAndLinker=gcc")
+        elif not arguments.jit:
             command.append("-p:PublishReadyToRun=true")
-        if not arguments.compress:
+        if not arguments.compress and not arguments.nativeaot:
             command.append("-p:EnableCompressionInSingleFile=false")
-        run(command, env=environment)
+        run(command, env=environment, cwd=fork)
         write_text(stamp, identity + "\n")
 
     if not (publish / "SharpEmu").exists():
@@ -335,12 +362,13 @@ def from_fork(toolchain, arguments):
         if was != identity and was.split()[:2] == identity.split()[:2]:
             was_mode, was_packing = was.split()[2:4]
             flags = [flag for flag, on in (("--jit", was_mode == "jit"),
+                                           ("--nativeaot", was_mode == "nativeaot"),
                                            ("--compress", was_packing == "compressed")) if on]
             raise Refusal(
                 "the publish tree at {} is a publish of this commit, {} and {}, and this would "
                 "package it as {} and {}. {} to match it, or drop --no-publish to publish "
                 "again".format(publish, was_mode, was_packing, mode, packing,
-                               "pass " + " ".join(flags) if flags else "pass neither --jit nor --compress"))
+                               "pass " + " ".join(flags) if flags else "pass none of --jit, --nativeaot, --compress"))
         if was != identity:
             raise Refusal(
                 "the publish tree at {} was built from '{}' and this would label it '{}'. drop "

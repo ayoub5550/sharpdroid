@@ -34,8 +34,8 @@ the emulator itself is the part under our control. today the whole of SharpEmu �
 
 | step | status | what it buys | effort |
 | --- | --- | --- | --- |
-| **NativeAOT payload** (fork branch `perf/android/nativeaot-v2`) | built and VM-verified on 2026-10-08 | VM boot **91.6–94.8 s → 25.4 s median (3.6–3.7×)**; FEX code invalidations 7,513 → 785, SMC write faults 2,999 → 0 [measured, VM]. no JIT under translation also means no tiering rejits mid-game, so less stutter [estimate] | done, needs real-game validation |
-| **lean HLE warm-up + parallel NID catalog** (`perf/android/lean-warmup`, also inside the AOT branch) | built and VM-measured | R2R boot −9 to −11 % [measured, VM, n=2] | done |
+| **NativeAOT payload** (fork branch `perf/android/nativeaot-v2`, `package-build.py --nativeaot`) | built, VM- and phone-measured on 2026-10-08 | **Xiaomi 14 boot 2.41 → 0.91 s cold (2.6×), 1.59 → 0.64 s warm** [measured]; VM 91.6–94.8 s → 25.4 s; FEX code invalidations 7,513 → 785, SMC write faults 2,999 → 0 [measured, VM]. no JIT under translation also means no tiering rejits mid-game, so less stutter [estimate] | done, needs real-game validation |
+| **lean HLE warm-up + parallel NID catalog** (`perf/android/lean-warmup`, also inside the AOT branch) | built and measured | R2R boot −5 % cold, −17 % warm on the Xiaomi 14; −9 to −11 % in the VM [measured] | done |
 | **native arm64 SharpEmu**, FEXCore only for PS5 code (the Arm64EC model) | design: [`native-arm64-backend.md`](native-arm64-backend.md) | emulator-side code 1.7–2.9×, cold boot 2.5–5×, HLE-heavy frames 1.1–1.4×, render/shader-bound frames 1.7–2.5× [estimate] | 26–40 engineer-weeks; proof of concept 2–3 weeks |
 | GPU: cache translated SPIR-V, async pipelines, render scale + FSR1 | roadmap #9–#11 | shader stutter; GPU 1.5–2.5× effective [estimate] | M |
 | CPU: per-game memory-order profiles, LRCPC detection | roadmap #7–#8 | 10–30 % on eligible titles [estimate] | S, risky |
@@ -46,7 +46,7 @@ none of these moves the GTA 6 estimate out of single digits on its own. together
 
 GTA V (the PS5 version) is on SharpEmu's compatibility list, and v0.0.5-nexus carries patches for it [source]. it is the same engine family, and it is the closest thing to GTA 6 that can run before GTA 6 exists. the plan:
 
-1. bring the fork up to upstream v0.0.5-nexus (the GTA V patches) and keep the NativeAOT branch on top.
+1. bring the fork up to upstream v0.0.5-nexus (the GTA V and Astro Bot patches) with the NativeAOT branch on top — done locally as `perf/android/nexus-aot`, which boots to the same refusal on the Xiaomi 14 in 0.89 s; it still needs a game run.
 2. once GTA V reaches in-game in sharpdroid, record fps, frame-time percentiles, CPU vs GPU bound, and memory peak on one reference phone, with your own legally made dump.
 3. scale by GTA 6's console budget (30 fps cap, heavier CPU and streaming) to get a measured, not guessed, GTA 6 estimate, and re-run it on each new phone generation.
 
