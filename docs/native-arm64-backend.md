@@ -1,6 +1,6 @@
 # a native arm64 SharpEmu with FEXCore as a guest-only CPU backend
 
-status: design and cost estimate; **step 0 built and measured on a phone** (2026-10-08, *step 0: measured* below); **the proof of concept built and passing in the VM** (*the proof of concept: built* below). it is roadmap item #15 in [`performance-roadmap.md`](performance-roadmap.md). **[measured]**, **[source]** and **[estimate]** mean what they mean in that document: an estimate is a reason to measure, not a result.
+status: design and cost estimate; **step 0 built and measured on a phone** (2026-10-08, *step 0: measured* below); **the proof of concept built, and every check passing on a Xiaomi 14** (*the proof of concept: built* below). it is roadmap item #15 in [`performance-roadmap.md`](performance-roadmap.md). **[measured]**, **[source]** and **[estimate]** mean what they mean in that document: an estimate is a reason to measure, not a result.
 
 ## executive summary
 
@@ -92,6 +92,26 @@ What the VM does show:
 - the managed transition dominates the rest. Identical processes varied 2.1–22 µs on that path, so TCG's cost for that path depends on where things land in memory.
 
 That is the case [`dry-lab.md`](dry-lab.md) rule 5 is for. The decision rule for the phone is written there, before the run.
+
+**On the phone** (Xiaomi 14, FEX-2609, 2026-10-08; the full table and its reading are in [`dry-lab.md`](dry-lab.md#poc-measured-on-houji-2026-10-08)) **[measured]**:
+
+| | fex model | x64 model (today) |
+| --- | --- | --- |
+| import round trip (`hle_add`) | 41.4 ns | 40.3 ns |
+| of which FEX's boundary | 28–31 ns | — |
+| host→guest callback | 141–158 ns | 54 ns |
+| C# body alone | 2.4–3.0 ns | 6.7–6.9 ns |
+| guest code (control) | 4.1–4.4 ns | 4.1 ns |
+
+- Every contract check passes on the phone, under SELinux as the shell uid.
+- The import boundary is a tie, so frames on guest threads gain only from time spent inside HLE bodies (2.2–2.9× faster natively).
+- Callbacks are 2.8× slower and must be fixed first.
+- The cheaper boundary needs the `HLECALL` patch: FEX's own share is 70 % of an import.
+
+The decision taken under the rule: **proceed**, with the next work being:
+1. a callback re-entry that skips the dispatcher prologue;
+2. `HLECALL`;
+3. *h* measured as body time on a real game.
 
 ## 1. how guest code runs today (`DirectExecutionBackend`, x64 only)
 

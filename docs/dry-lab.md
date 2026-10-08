@@ -100,7 +100,7 @@ The native backend speeds up only the emulator side. Guest code stays translated
 | 2026-10-08 | step 0: native emulator vs FEX | VM, virtual, houji | — (written after; the reason rule 1 exists) | the virtual device gave ~4.6–6.5× where the phone gave 2.9× | rule 5: the VM never ranks native vs translated |
 | 2026-10-08 | PoC: does FEXCore-as-a-library meet SharpEmu's contract? | x86, VM | "all checks pass, or the design changes" | **PASS** in the VM: args, regs, nested callback, transfer, block/resume, 4 threads × 10⁶ imports under 3,997 forced GCs, unaligned atomics, .NET null-ref | go to the phone |
 | 2026-10-08 | PoC: does it run on real Android (bionic linker, `/data/local/tmp`, dlopen, the fixed guest mapping)? | Test Lab virtual | "all checks pass, or fix before spending a phone run" | **PASS**, every check, 3 interleaved rounds. Times are not read (rule 5) | go to houji |
-| 2026-10-08 | PoC: is the import boundary affordable? | houji | see *PoC rule* | *(pending)* | |
+| 2026-10-08 | PoC: is the import boundary affordable? | houji | see *PoC rule* | **B_fex ≈ B_x64: 41.4 vs 40.3 ns** (ratio 1.03). Callbacks 2.8× *slower*. All checks PASS on the phone | rule row 2: proceed; leaf imports via slot functions; the callback path and FEX's boundary are the work (*PoC: measured* below) |
 
 ### PoC rule (written before the phone run)
 
@@ -113,7 +113,29 @@ The native backend speeds up only the emulator side. Guest code stays translated
 | B_x64 < B_fex ≤ 2 · B_x64 | proceed. Hot leaf imports go through slot functions (`sfx_set_slot_fn`, no copy) or stay in translation as x86/LLE |
 | B_fex > 2 · B_x64 | before any further backend work, the boundary itself is the project: FEX's `HLECALL` opcode (no block exit, a partial spill) and a cheaper managed transition |
 
-The split comes from `hle_add_builtin` (FEX's boundary alone, C++), `hle_add_direct` (plus the managed transition, no copy) and `hle_add` (plus the register copy). It says which of the three to attack.
+### PoC: measured on houji (2026-10-08)
+
+The rule above was committed (`0eb6a9e`) before this run. The run was 3 interleaved rounds × 3 processes (fex, x64, fex with `sfx.CallSave=full`), 10⁶ imports, 5 timed rounds each, with medians across processes **[measured]**:
+
+| ns per op | fex model | x64 model (today) | ratio |
+| --- | --- | --- | --- |
+| `hle_add` (B) | 41.4 (40.1–48.1; one 67.8 outlier) | 40.3 (40.2–42.8) | **1.03: a tie** |
+| `hle_add_builtin`: FEX's boundary alone | 28.3–30.8 | — | 70 % of B |
+| `hle_add_direct`: plus the managed transition | 34.3–37.1 | — | +6 ns |
+| `hle_callback` | 140.6–158.1 | 54.0–54.2 | **2.6–2.9× slower** |
+| `hle_hash64` (latency-bound C# body) | 95.5–104.5 | 93.1–95.0 | 1.0 |
+| `csharp_body`: C# alone | 2.4–3.0 | 6.7–6.9 | **2.2–2.9× faster** |
+| `guest_compute` (the control) | 4.1–4.4 | 4.1 | 1.0 |
+
+- **The virtual device would have misled us.** It measured `hle_add` at 28.5 vs 77.7 ns, a 2.7× win for the fex model; on silicon it is a tie. That is rule 5 again, now on a third instrument: the virtual device exaggerates what translation costs the C# side, as it did in step 0.
+- **The import boundary is a wash.** Of its 40 ns, 28 are FEX's own boundary (spill everything, end the block, look up the `ret`). The C# transition adds 6 ns and the register copy 5 ns. So the lever is FEX's `HLECALL` op from the design: no block exit, a partial spill **[estimate: ~10–15 ns]**.
+- **Callbacks regressed**, by ~100 ns per host→guest call (`HandleCallback`'s dispatcher entry and exit). `sfx.CallSave=light` buys 2–10 % of it. This has to be fixed before the backend; the target is a re-entry that skips the dispatcher prologue.
+- **The C# side is 2.2–2.9× faster natively**, matching step 0's 2.9× boot. Guest code costs the same in both models.
+- **Correctness on a real phone** (Android 15, SELinux enforcing, shell uid): every check passes. That includes 4 guest threads × 5·10⁶ imports under 88 forced GCs, 8 threads × 2·10⁶ under 43, and the unaligned-atomic backpatch.
+
+**What it changes for experiment 0.5.** The boundary costs the same in both models, so the frame-time gain on a guest thread comes only from time spent *inside* HLE bodies, not from the HLE share as a whole. *h* should therefore be measured as body time. Imports dominated by their entry cost gain nothing until `HLECALL` lands.
+
+How to read the split: `hle_add_builtin` is FEX's boundary alone (C++), `hle_add_direct` adds the managed transition with no copy, and `hle_add` adds the register copy. Together they say which of the three to attack.
 
 ## how to run
 

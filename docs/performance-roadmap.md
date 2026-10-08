@@ -116,5 +116,11 @@ results land here as they are produced, with where and how.
   - 4 guest threads × 10⁶ imports under 3,997 forced GCs;
   - unaligned atomics, and .NET's own fault handling.
 
-  The VM cannot time the import boundary; the phone decides that, under a rule written beforehand. Both are in [`native-arm64-backend.md`](native-arm64-backend.md#the-proof-of-concept-built) and [`dry-lab.md`](dry-lab.md).
+  On the Xiaomi 14 every check passes too. There:
+  - an import round trip ties today's design (41.4 vs 40.3 ns), and FEX's own boundary is 70 % of it;
+  - host→guest callbacks are 2.8× slower;
+  - the C# side is 2.2–2.9× faster;
+  - guest code costs the same.
+
+  The Test Lab virtual device had shown a 2.7× import win that the phone did not confirm. Details: [`native-arm64-backend.md`](native-arm64-backend.md#the-proof-of-concept-built), [`dry-lab.md`](dry-lab.md).
 - **two x86-64 syscalls the host layer did not pass through**: `getcpu` (309, three calls per boot, from glibc's `sched_getcpu()` because rseq is refused) and `getgroups` (115). both now pass through, the regression set is still 15 of 19 with them, and a payload boot is down to one unhandled syscall, `get_mempolicy` (239), which .NET's NUMA probe asks and reads ENOSYS as *no NUMA* — the right answer on a phone, so it stays unhandled.
