@@ -101,6 +101,8 @@ The native backend speeds up only the emulator side. Guest code stays translated
 | 2026-10-08 | PoC: does FEXCore-as-a-library meet SharpEmu's contract? | x86, VM | "all checks pass, or the design changes" | **PASS** in the VM: args, regs, nested callback, transfer, block/resume, 4 threads × 10⁶ imports under 3,997 forced GCs, unaligned atomics, .NET null-ref | go to the phone |
 | 2026-10-08 | PoC: does it run on real Android (bionic linker, `/data/local/tmp`, dlopen, the fixed guest mapping)? | Test Lab virtual | "all checks pass, or fix before spending a phone run" | **PASS**, every check, 3 interleaved rounds. Times are not read (rule 5) | go to houji |
 | 2026-10-08 | PoC: is the import boundary affordable? | houji | see *PoC rule* | **B_fex ≈ B_x64: 41.4 vs 40.3 ns** (ratio 1.03). Callbacks 2.8× *slower*. All checks PASS on the phone | rule row 2: proceed; leaf imports via slot functions; the callback path and FEX's boundary are the work (*PoC: measured* below) |
+| 2026-10-08 | can the shim's own guest entry (`sfx.Callback=fast`) close the callback gap? is FEX's thunk op a cheaper import boundary? | x86, VM (correctness) → houji | see *callback fast path rule* | pending (VM: every check PASS under both entries, correctness only) | — |
+| 2026-10-08 | does a real PS5 program run on the phone, and what does translation cost a CPU-bound game? (DOOM shareware, a native PS5 app built from GPL sources: [`poc/ps5-doom`](../poc/ps5-doom/README.md)) | sandbox x86 (correctness + SharpEmu vs native), VM (correctness), houji | see *DOOM rule* | sandbox: plays, timedemo at 97–99 % of the same C code built natively (clang, 3 runs each). VM: plays under FEX after one fix (heap pointers above 2⁴⁷); times not read. houji: pending | — |
 
 ### PoC rule (written before the phone run)
 
@@ -136,6 +138,55 @@ The rule above was committed (`0eb6a9e`) before this run. The run was 3 interlea
 **What it changes for experiment 0.5.** The boundary costs the same in both models, so the frame-time gain on a guest thread comes only from time spent *inside* HLE bodies, not from the HLE share as a whole. *h* should therefore be measured as body time. Imports dominated by their entry cost gain nothing until `HLECALL` lands.
 
 How to read the split: `hle_add_builtin` is FEX's boundary alone (C++), `hle_add_direct` adds the managed transition with no copy, and `hle_add` adds the register copy. Together they say which of the three to attack.
+
+### callback fast path rule (written before the phone run)
+
+What is being tested ([`native-arm64-backend.md`](native-arm64-backend.md#callback-fast-path-design-built-not-yet-measured-on-a-phone)):
+- `sfx.Callback=fast`, the shim's own guest entry with a matched call-return entry, against FEX's `HandleCallback` (`legacy`);
+- thunk slots, imports through FEX's own `0f 3f` op, against the `syscall` slot;
+- `sfx.AFP=0` (no FPCR writes) as a diagnostic.
+
+The run: one bundle, `poc/fexpoc/run-device.sh`, 3 interleaved rounds of fex (legacy), fexfast, x64, fexfastfull, fexnoafp and fexfallback (the fast entry with every return forced through FEX's `CALLBACKRET`), then the thread and unaligned tests under each entry. Numbers are medians across the rounds' processes.
+
+- *C_leg*, *C_fast*: `hle_callback` ns/op in the fex model under `legacy` and `fast`. *C_x64*: the same row in the x64 model (54 ns on 2026-10-08).
+- *E_fast*: what the fast entry and exit alone cost, `call_builtin` under `fast`.
+- *T_b*, *B_b*: `hle_add_thunk_builtin` and `hle_add_builtin`, the thunk and `syscall` boundaries alone. *T*, *B*: `hle_add_thunk` and `hle_add`, with the C# handler.
+
+**Gate (rule 2):** every check in every `fexfast*` and `fexfallback*` process, and in `threads4fast`, `threads8fast`, `threads4fallback` and `unalignedfast`, must PASS. Otherwise the fast path is out, whatever its speed. The same gate applies to the thunk rows (a wrong sum is a failure).
+
+| outcome | what it changes |
+| --- | --- |
+| C_fast ≤ 1.2 · C_x64 | callbacks no longer block the backend: `fast` becomes the default; the legacy path stays as a switch for one more run |
+| C_fast ≤ 0.8 · C_leg, but > 1.2 · C_x64 | `fast` becomes the default, and the splits pick the next step. If *E_fast* is most of *C_fast − B*, the floor is FEX's fill/spill: next is a FEX patch with a lighter entry (fill only what the callee reads). If `call_top − call_builtin` is most, it is the managed transition: next is the C# side |
+| C_fast > 0.8 · C_leg (under a 20 % cut) | the entry is not where the cost is. `fast` stays a switch, not the default; the splits and `fexnoafp` say where the cost is |
+| fexnoafp's `call_builtin` and `hle_add_builtin` ≥ 30 % below fexfast's, and its `guest_sse` (the scalar-SSE control) within 10 % of fexfast's | the FPCR write is a large share of every boundary and AFP buys the guest little: `sfx.AFP=0` becomes a candidate default, pending a game-level check (scalar SSE in real titles is denser than one loop) |
+| the boundaries ≥ 30 % below, but `guest_sse` > 10 % slower | AFP stays. The FPCR write is the cost to remove FEX-side: fewer transitions (batching), not cheaper ones |
+| T_b ≤ 0.7 · B_b and T ≤ B | thunk slots become the import boundary for leaf imports (stock FEX, no patch); the `HLECALL` patch drops in priority |
+| 0.7 · B_b < T_b < B_b | thunk slots stay an option; `HLECALL` (a partial spill) is still the lever |
+| T_b ≥ B_b | thunk slots are dropped |
+
+
+### DOOM rule (written before the phone run)
+
+What runs: `doom-td`, the DOOM app with `-timedemo demo1` (5,026 tics of recorded play, rendered as fast as the CPU allows; DOOM prints `timed … (F fps)`). Three builds of the same engine source, interleaved, 2 rounds each:
+
+- *S*: SharpEmu (NativeAOT x64 payload) under the host layer, i.e. FEX, running the PS5 `eboot.bin`. No presenter (`SHARPEMU_NO_FLIP_PACING=1`, no host window), so a flip costs what it costs in the sandbox run.
+- *F*: the native x86-64 twin (`doomgeneric_bench.c`, clang) under the host layer: the same guest code translated by FEX, with no SharpEmu.
+- *A*: the native arm64 twin, no translation at all.
+
+In the sandbox, SharpEmu ran at 97–99 % of its native twin, so on x86 SharpEmu's own cost (HLE, flips) is 1–3 %. On the phone, *F / A* is FEX's tax on game code and *S / F* is SharpEmu's.
+
+**Gate:** both `doom-td-sharpemu` rounds print `timed 5026 gametics`, and the `doom-play` frames show the title screen and gameplay. Otherwise the run is a correctness bug to fix first, and no speed is read.
+
+| outcome | what it changes |
+| --- | --- |
+| S / F ≥ 0.9 | SharpEmu adds little on top of FEX for a CPU-bound title. The game-code tax is FEX's alone (*F / A*), and the native arm64 backend cannot remove it: guest code is x86 in every design. The lever for guest-code speed is FEX tuning (TSO and memory-model options, `sfx.*` knobs, block size), not SharpEmu |
+| 0.6 ≤ S / F < 0.9 | SharpEmu costs something FEX alone does not. Profile *S* (`SHARPEMU_PROFILE_PERFORMANCE=1`). The suspects are the flip path, the import boundary (≈40 ns each, a few thousand per frame) and the HLE heap lookup (a linear scan per access, `TryAccessTrackedLibcHeap`) |
+| S / F < 0.6 | something structural, such as a signal-driven fault path or a lock on every import. Find it before any backend work |
+| F / A ≥ 0.6 | FEX translates this kind of code well. The CPU side of a PS5 game is not the wall; the GPU path is (shader translation, Vulkan on Adreno) |
+| F / A < 0.4 | the CPU-translation wall is real even for 1993 integer code. FEX options such as `TSOEnabled=0` for single-threaded guests become the first experiment, on DOOM, before any AAA claim |
+
+DOOM is single-threaded integer code with a software renderer. It says nothing about GPU-bound or heavily multi-threaded titles; it is the floor, not the ceiling.
 
 ## how to run
 

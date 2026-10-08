@@ -75,6 +75,7 @@ a repository boundary there would buy an independent version number nobody would
 │
 ├── guests/                   x86-64 test guests the host layer is exercised against
 ├── poc/fexpoc/               the FexCpuBackend proof of concept: guest blob, NativeAOT app, VM and device scripts
+├── poc/ps5-doom/             DOOM shareware as a native PS5 app: a free test title for SharpEmu, its native twins, device script
 ├── guest-libs/               the x86-64 shared objects the guest's linker searches
 ├── scripts/                  Python 3, standard library only
 │   ├── run.py                build, stage and launch on a connected device. one command
