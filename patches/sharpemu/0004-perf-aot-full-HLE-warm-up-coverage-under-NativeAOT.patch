@@ -1,0 +1,217 @@
+From 4681940eb60fd30e2ea570580920883cc7fccc73 Mon Sep 17 00:00:00 2001
+From: ayoub5550 <140963656+ayoub5550@users.noreply.github.com>
+Date: Thu, 8 Oct 2026 02:07:59 +0000
+Subject: [PATCH 4/4] perf(aot): full HLE warm-up coverage under NativeAOT
+
+- root SharpEmu.HLE/Libs/Core and NLayer under SharpEmuNativeAot so the warm-up's
+  reflection sweep sees every type (and AjmMp3Decoder's NLayer reflection keeps working)
+- resolve guest-reachable assemblies from the loaded set when there is no JIT
+  (GetReferencedAssemblies() is empty under NativeAOT): 1 -> 14 assemblies warmed
+- skip method preparation when there is no JIT; name every HLE initializer that
+  throws under SHARPEMU_BOOT_TRACE=1 (framework ones are expected under AOT)
+- run the shader translators' initializers explicitly on the host thread under
+  NativeAOT (a static class has no runtime type handle without a typeof)
+---
+ src/SharpEmu.CLI/Program.cs                  | 19 +++++++++
+ src/SharpEmu.CLI/SharpEmu.CLI.csproj         |  9 ++++
+ src/SharpEmu.HLE/ModuleManager.LeanWarmup.cs | 44 ++++++++++++++++----
+ src/SharpEmu.HLE/ModuleManager.cs            | 14 +++++++
+ 4 files changed, 79 insertions(+), 7 deletions(-)
+
+diff --git a/src/SharpEmu.CLI/Program.cs b/src/SharpEmu.CLI/Program.cs
+index 3a5ca16..98e1639 100644
+--- a/src/SharpEmu.CLI/Program.cs
++++ b/src/SharpEmu.CLI/Program.cs
+@@ -64,6 +64,24 @@ internal static partial class Program
+         }
+     }
+ 
++    // NativeAOT gives a static class no runtime type handle unless something names it with typeof,
++    // so the HLE warm-up's reflection sweep cannot run these initializers there (it reports them
++    // under SHARPEMU_BOOT_TRACE=1). Each holds real static state and is first reached from the GPU
++    // path, which can be a guest thread, so they run here, on the host thread, before any guest
++    // thread exists -- the same guarantee the warm-up gives the JIT build. A no-op under CoreCLR.
++    private static void WarmAotOnlyInitializers()
++    {
++        if (System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeCompiled)
++        {
++            return;
++        }
++
++        System.Runtime.CompilerServices.RuntimeHelpers.RunClassConstructor(typeof(SharpEmu.ShaderCompiler.Gen5ShaderTranslator).TypeHandle);
++        System.Runtime.CompilerServices.RuntimeHelpers.RunClassConstructor(typeof(SharpEmu.ShaderCompiler.Gen5ShaderScalarEvaluator).TypeHandle);
++        System.Runtime.CompilerServices.RuntimeHelpers.RunClassConstructor(typeof(SharpEmu.ShaderCompiler.Vulkan.Gen5SpirvTranslator).TypeHandle);
++        SharpEmu.HLE.BootTrace.Mark("aot-initializers");
++    }
++
+     private static void ConfigureManagedPluginResolution()
+     {
+         AssemblyLoadContext.Default.Resolving += static (loadContext, assemblyName) =>
+@@ -318,6 +336,7 @@ internal static partial class Program
+         try
+         {
+             using var runtime = SharpEmuRuntime.CreateDefault(runtimeOptions);
++            WarmAotOnlyInitializers();
+ 
+             OrbisGen2Result result;
+             ConsoleCancelEventHandler? cancelHandler = null;
+diff --git a/src/SharpEmu.CLI/SharpEmu.CLI.csproj b/src/SharpEmu.CLI/SharpEmu.CLI.csproj
+index 129ef73..5ba8f52 100644
+--- a/src/SharpEmu.CLI/SharpEmu.CLI.csproj
++++ b/src/SharpEmu.CLI/SharpEmu.CLI.csproj
+@@ -27,6 +27,15 @@ SPDX-License-Identifier: GPL-2.0-or-later
+     <EnableCompressionInSingleFile>false</EnableCompressionInSingleFile>
+     <IncludeNativeLibrariesForSelfExtract>false</IncludeNativeLibrariesForSelfExtract>
+   </PropertyGroup>
++  <!-- Rooted whole under NativeAOT: the HLE warm-up enumerates these assemblies' types to run
++       every class constructor before a guest thread exists, which needs their metadata kept, and
++       AjmMp3Decoder reaches NLayer's internal stream reader by reflection. -->
++  <ItemGroup Condition="'$(SharpEmuHeadless)' == 'true' and '$(SharpEmuNativeAot)' == 'true'">
++    <TrimmerRootAssembly Include="SharpEmu.HLE" />
++    <TrimmerRootAssembly Include="SharpEmu.Libs" />
++    <TrimmerRootAssembly Include="SharpEmu.Core" />
++    <TrimmerRootAssembly Include="NLayer" />
++  </ItemGroup>
+ 
+   <PropertyGroup>
+     <!-- GUI subsystem so starting without arguments opens the frontend with no
+diff --git a/src/SharpEmu.HLE/ModuleManager.LeanWarmup.cs b/src/SharpEmu.HLE/ModuleManager.LeanWarmup.cs
+index 51e759b..442e0ac 100644
+--- a/src/SharpEmu.HLE/ModuleManager.LeanWarmup.cs
++++ b/src/SharpEmu.HLE/ModuleManager.LeanWarmup.cs
+@@ -69,7 +69,7 @@ public sealed partial class ModuleManager
+             }
+             else
+             {
+-                frameworkInitialised += WarmAssemblyByReflection(assembly, includeMethods: false, out _, out _, out _);
++                frameworkInitialised += WarmAssemblyByReflection(assembly, includeMethods: false, out _, out _, out _, report: false);
+             }
+         }
+ 
+@@ -80,9 +80,12 @@ public sealed partial class ModuleManager
+         var failed = 0;
+         var jitted = 0;
+         var jitFailed = 0;
++        // NativeAOT has no JIT: every method is already machine code, so only the class
++        // constructors are left to warm (and reflecting over methods would only cost time).
++        var includeMethods = RuntimeFeature.IsDynamicCodeCompiled;
+         foreach (var assembly in hleAssemblies)
+         {
+-            if (TryPlan(assembly, includeMethods: true, out var plan))
++            if (TryPlan(assembly, includeMethods, out var plan))
+             {
+                 warmed += RunInitializers(plan, out var threw);
+                 failed += threw;
+@@ -90,13 +93,18 @@ public sealed partial class ModuleManager
+             }
+             else
+             {
+-                warmed += WarmAssemblyByReflection(assembly, includeMethods: true, out var threw, out var prepared, out var prepareFailed);
++                warmed += WarmAssemblyByReflection(assembly, includeMethods, out var threw, out var prepared, out var prepareFailed);
+                 failed += threw;
+                 jitted += prepared;
+                 jitFailed += prepareFailed;
+             }
+         }
+ 
++        if (BootTrace.Enabled)
++        {
++            Console.Error.WriteLine($"[HLE] warm-up assemblies: {string.Join(", ", hleAssemblies.Select(a => a.GetName().Name))}");
++        }
++
+         BootTrace.Mark("warm-hle-cctors");
+ 
+         var threads = WarmupThreads();
+@@ -105,8 +113,9 @@ public sealed partial class ModuleManager
+         jitFailed += prepareFailures;
+ 
+         BootTrace.Mark("warm-hle-prepare");
++        var mode = RuntimeFeature.IsDynamicCodeCompiled ? $"lean warm-up, {threads} thread(s)" : "lean warm-up, NativeAOT";
+         Console.Error.WriteLine(
+-            $"[HLE] Warmed {warmed} type initializers ({failed} threw) + JIT-compiled {jitted} methods ({jitFailed} skipped) across {hleAssemblies.Length} HLE assemblies, plus {frameworkInitialised} framework type initializers (lean warm-up, {threads} thread(s)).");
++            $"[HLE] Warmed {warmed} type initializers ({failed} threw) + JIT-compiled {jitted} methods ({jitFailed} skipped) across {hleAssemblies.Length} HLE assemblies, plus {frameworkInitialised} framework type initializers ({mode}).");
+     }
+ 
+     // The work list of one assembly, from its metadata. False when the runtime will not hand out
+@@ -203,10 +212,11 @@ public sealed partial class ModuleManager
+                 RuntimeHelpers.RunClassConstructor(module.ResolveTypeHandle(token));
+                 warmed++;
+             }
+-            catch
++            catch (Exception ex)
+             {
+                 // A throw here beats a guest-thread fail-fast later; swallow and continue.
+                 failed++;
++                ReportThrow(plan.Assembly, $"0x{token:X8}", ex);
+             }
+         }
+ 
+@@ -297,8 +307,21 @@ public sealed partial class ModuleManager
+         return (prepared, failed);
+     }
+ 
++    // Under SHARPEMU_BOOT_TRACE=1, which initializer threw and why: a type whose .cctor throws here
++    // throws TypeInitializationException at every later use, so the list is the triage list.
++    private static void ReportThrow(Assembly assembly, string type, Exception ex)
++    {
++        if (!BootTrace.Enabled)
++        {
++            return;
++        }
++
++        var root = ex is TypeInitializationException { InnerException: { } inner } ? inner : ex;
++        Console.Error.WriteLine($"[HLE] cctor threw: {assembly.GetName().Name}!{type}: {root.GetType().Name}: {root.Message}");
++    }
++
+     // The legacy per-assembly sweep, for an assembly whose metadata the runtime will not expose.
+-    private static int WarmAssemblyByReflection(Assembly assembly, bool includeMethods, out int failed, out int prepared, out int prepareFailed)
++    private static int WarmAssemblyByReflection(Assembly assembly, bool includeMethods, out int failed, out int prepared, out int prepareFailed, bool report = true)
+     {
+         failed = 0;
+         prepared = 0;
+@@ -333,9 +356,16 @@ public sealed partial class ModuleManager
+                 RuntimeHelpers.RunClassConstructor(type.TypeHandle);
+                 warmed++;
+             }
+-            catch
++            catch (Exception ex)
+             {
+                 failed++;
++                // framework types throw here by the hundred under NativeAOT ("missing native code"):
++                // their statics were preinitialised at compile time or are never touched, so only
++                // the HLE side is worth naming.
++                if (report)
++                {
++                    ReportThrow(assembly, type.FullName ?? type.Name, ex);
++                }
+             }
+ 
+             if (!includeMethods)
+diff --git a/src/SharpEmu.HLE/ModuleManager.cs b/src/SharpEmu.HLE/ModuleManager.cs
+index a6604d8..96d90d5 100644
+--- a/src/SharpEmu.HLE/ModuleManager.cs
++++ b/src/SharpEmu.HLE/ModuleManager.cs
+@@ -233,6 +233,20 @@ public sealed partial class ModuleManager : IModuleManager
+             result[assembly.FullName ?? assembly.GetName().Name ?? string.Empty] = assembly;
+         }
+ 
++        // NativeAOT keeps no assembly references (GetReferencedAssemblies() is empty there), but every
++        // assembly it compiled in is already loaded, so the same filter runs over the loaded set.
++        if (!RuntimeFeature.IsDynamicCodeCompiled)
++        {
++            foreach (var loaded in AppDomain.CurrentDomain.GetAssemblies())
++            {
++                var name = loaded.GetName().Name;
++                if (name is not null && IsGuestReachableInterop(name))
++                {
++                    result[loaded.FullName ?? name] = loaded;
++                }
++            }
++        }
++
+         foreach (var assembly in scanned)
+         {
+             AssemblyName[] references;
+-- 
+2.39.5
+

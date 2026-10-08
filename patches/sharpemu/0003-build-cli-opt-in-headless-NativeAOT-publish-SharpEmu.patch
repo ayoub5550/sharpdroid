@@ -1,0 +1,108 @@
+From 8d967d38316b83d9737d20648df583dd54ef02f4 Mon Sep 17 00:00:00 2001
+From: ayoub5550 <140963656+ayoub5550@users.noreply.github.com>
+Date: Thu, 8 Oct 2026 01:41:11 +0000
+Subject: [PATCH 3/4] build(cli): opt-in headless NativeAOT publish
+ (SharpEmuHeadless / SharpEmuNativeAot)
+
+-p:SharpEmuHeadless=true drops the SharpEmu.GUI (Avalonia) reference and compiles out
+Updater, GuiLauncher and GUI settings via SHARPEMU_HEADLESS.
+-p:SharpEmuNativeAot=true (with headless) sets PublishAot, InvariantGlobalization and
+disables single-file/R2R. PublishAot is set in the csproj, not globally, because a
+global PublishAot leaks into the netstandard source generator (NETSDK1207).
+---
+ src/SharpEmu.CLI/Program.cs          | 14 ++++++++++++++
+ src/SharpEmu.CLI/SharpEmu.CLI.csproj | 18 +++++++++++++++++-
+ 2 files changed, 31 insertions(+), 1 deletion(-)
+
+diff --git a/src/SharpEmu.CLI/Program.cs b/src/SharpEmu.CLI/Program.cs
+index 191601f..3a5ca16 100644
+--- a/src/SharpEmu.CLI/Program.cs
++++ b/src/SharpEmu.CLI/Program.cs
+@@ -3,7 +3,9 @@
+ 
+ using SharpEmu.Core.Runtime;
+ using SharpEmu.Core.Cpu;
++#if !SHARPEMU_HEADLESS
+ using SharpEmu.GUI;
++#endif
+ using SharpEmu.HLE;
+ using SharpEmu.Libs.VideoOut;
+ using SharpEmu.Logging;
+@@ -83,16 +85,23 @@ internal static partial class Program
+ 
+     private static int Run(string[] args)
+     {
++#if !SHARPEMU_HEADLESS
+         if (Updater.TryApply(args, out var updateExitCode))
+         {
+             return updateExitCode;
+         }
++#endif
+ 
+         args = NormalizeInternalArguments(args, out var isMitigatedChild);
+ 
+         if (args.Length == 0)
+         {
++#if SHARPEMU_HEADLESS
++            Console.Error.WriteLine("This is a headless SharpEmu build; usage: SharpEmu <eboot.bin> [options]");
++            return 2;
++#else
+             return GuiLauncher.Run();
++#endif
+         }
+ 
+         // The executable uses the GUI subsystem, so CLI mode has to connect
+@@ -1326,6 +1335,10 @@ internal static partial class Program
+     private static HostVideoOptions LoadConfiguredVideoOptions(string ebootPath)
+     {
+         var defaults = HostVideoOptions.Default;
++#if SHARPEMU_HEADLESS
++        // Headless build has no GUI settings store; command-line overrides still apply.
++        return defaults;
++#else
+         try
+         {
+             var effective = EffectiveLaunchSettings.Resolve(
+@@ -1364,6 +1377,7 @@ internal static partial class Program
+                 $"[LOADER][WARN] GUI video settings could not be loaded; using defaults: {exception.Message}");
+             return defaults;
+         }
++#endif
+     }
+ 
+     private static bool TrySplitOption(string argument, string name, out string value)
+diff --git a/src/SharpEmu.CLI/SharpEmu.CLI.csproj b/src/SharpEmu.CLI/SharpEmu.CLI.csproj
+index 7cc497b..129ef73 100644
+--- a/src/SharpEmu.CLI/SharpEmu.CLI.csproj
++++ b/src/SharpEmu.CLI/SharpEmu.CLI.csproj
+@@ -8,10 +8,26 @@ SPDX-License-Identifier: GPL-2.0-or-later
+   <ItemGroup>
+     <ProjectReference Include="..\SharpEmu.Core\SharpEmu.Core.csproj" />
+     <ProjectReference Include="..\SharpEmu.Debugger\SharpEmu.Debugger.csproj" />
+-    <ProjectReference Include="..\SharpEmu.GUI\SharpEmu.GUI.csproj" />
++    <ProjectReference Include="..\SharpEmu.GUI\SharpEmu.GUI.csproj" Condition="'$(SharpEmuHeadless)' != 'true'" />
+     <ProjectReference Include="..\SharpEmu.Logging\SharpEmu.Logging.csproj" />
+   </ItemGroup>
+ 
++  <!-- Headless NativeAOT mode (sharpdroid payload): -p:SharpEmuHeadless=true drops
++       the Avalonia GUI and publishes with NativeAOT instead of single-file R2R. -->
++  <PropertyGroup Condition="'$(SharpEmuHeadless)' == 'true'">
++    <DefineConstants>$(DefineConstants);SHARPEMU_HEADLESS</DefineConstants>
++  </PropertyGroup>
++  <!-- PublishAot must be set here, not as a global -p: (a global PublishAot
++       leaks into the netstandard source-generator project -> NETSDK1207). -->
++  <PropertyGroup Condition="'$(SharpEmuHeadless)' == 'true' and '$(SharpEmuNativeAot)' == 'true'">
++    <PublishAot>true</PublishAot>
++    <InvariantGlobalization>true</InvariantGlobalization>
++    <PublishSingleFile>false</PublishSingleFile>
++    <PublishReadyToRun>false</PublishReadyToRun>
++    <EnableCompressionInSingleFile>false</EnableCompressionInSingleFile>
++    <IncludeNativeLibrariesForSelfExtract>false</IncludeNativeLibrariesForSelfExtract>
++  </PropertyGroup>
++
+   <PropertyGroup>
+     <!-- GUI subsystem so starting without arguments opens the frontend with no
+          console window; CLI mode re-attaches to the parent terminal's console. -->
+-- 
+2.39.5
+

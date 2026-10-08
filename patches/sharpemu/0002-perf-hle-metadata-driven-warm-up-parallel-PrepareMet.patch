@@ -1,0 +1,471 @@
+From 7e2417ecdd995dde217d9d55d2a12fee15bfbcb6 Mon Sep 17 00:00:00 2001
+From: ayoub5550 <140963656+ayoub5550@users.noreply.github.com>
+Date: Thu, 8 Oct 2026 01:45:13 +0000
+Subject: [PATCH 2/4] perf(hle): metadata-driven warm-up, parallel
+ PrepareMethod, NID catalog preload
+
+The HLE warm-up (every class constructor run and every non-generic HLE
+method prepared before a guest thread exists) took ~43 s of a ~102 s boot
+in the sharpdroid arm64 VM, most of it reflection: GetTypes() loading every
+type and GetMethods() materialising a MethodInfo per method.
+
+* the work list now comes from metadata tokens (TryGetRawMetadata), so
+  nothing is loaded just to be enumerated
+* initializers run only for types with a .cctor or static fields; class
+  constructors still run one at a time, framework first, in metadata order
+* PrepareMethod (which executes no code) is spread over up to 6 threads
+* the 154k-entry NID catalog is parsed on its own thread meanwhile
+
+SHARPEMU_WARMUP=legacy, SHARPEMU_WARMUP_THREADS=N and
+SHARPEMU_AEROLIB_PRELOAD=0 restore the previous behaviour piecewise.
+---
+ src/SharpEmu.Core/Runtime/SharpEmuRuntime.cs |  12 +
+ src/SharpEmu.HLE/ModuleManager.LeanWarmup.cs | 377 +++++++++++++++++++
+ src/SharpEmu.HLE/ModuleManager.cs            |  10 +-
+ 3 files changed, 397 insertions(+), 2 deletions(-)
+ create mode 100644 src/SharpEmu.HLE/ModuleManager.LeanWarmup.cs
+
+diff --git a/src/SharpEmu.Core/Runtime/SharpEmuRuntime.cs b/src/SharpEmu.Core/Runtime/SharpEmuRuntime.cs
+index 5d68402..16a1c92 100644
+--- a/src/SharpEmu.Core/Runtime/SharpEmuRuntime.cs
++++ b/src/SharpEmu.Core/Runtime/SharpEmuRuntime.cs
+@@ -82,6 +82,18 @@ public sealed class SharpEmuRuntime : ISharpEmuRuntime
+             ImportTraceLimit = Math.Max(0, options.ImportTraceLimit),
+             DebugHook = options.DebugHook,
+         };
++        // The NID catalog is pure data (154k entries) and nothing before the loader needs it, so it
++        // is parsed on its own thread while the exports are registered and the HLE is warmed.
++        // SHARPEMU_AEROLIB_PRELOAD=0 keeps the load on this thread, where Aerolib.Instance is read.
++        if (Environment.GetEnvironmentVariable("SHARPEMU_AEROLIB_PRELOAD") != "0")
++        {
++            new Thread(static () => _ = Aerolib.Instance)
++            {
++                IsBackground = true,
++                Name = "aerolib-preload",
++            }.Start();
++        }
++
+         var moduleManager = new ModuleManager();
+         // The compile-time generated registry (SharpEmu.SourceGenerators) is the sole
+         // registration source; content tests in SharpEmu.Libs.Tests pin its invariants.
+diff --git a/src/SharpEmu.HLE/ModuleManager.LeanWarmup.cs b/src/SharpEmu.HLE/ModuleManager.LeanWarmup.cs
+new file mode 100644
+index 0000000..51e759b
+--- /dev/null
++++ b/src/SharpEmu.HLE/ModuleManager.LeanWarmup.cs
+@@ -0,0 +1,377 @@
++// Copyright (C) 2026 SharpEmu Emulator Project
++// SPDX-License-Identifier: GPL-2.0-or-later
++
++using System.Reflection;
++using System.Reflection.Metadata;
++using System.Reflection.Metadata.Ecma335;
++using System.Runtime.CompilerServices;
++
++namespace SharpEmu.HLE;
++
++// The same guarantee as the legacy warm-up -- every class constructor of an HLE or framework type
++// has run, and every non-generic HLE method has been prepared, before any guest thread exists --
++// at a fraction of its cost, because the work list comes from metadata instead of reflection.
++//
++// * Reflection's GetTypes() loads every type of an assembly and GetConstructors()/GetMethods()
++//   materialise a MethodInfo per method. A boot under FEX spends seconds on that alone. A metadata
++//   token is all RunClassConstructor and PrepareMethod need, and reading tokens loads nothing.
++// * Only types that have something to initialise -- a .cctor, or static fields whose storage the
++//   runtime allocates on first access -- are touched for their initializer. RunClassConstructor on
++//   any other type is a no-op beyond loading it, and type loads already happen on guest threads
++//   (every generic instantiation is loaded lazily), so skipping them changes nothing.
++// * Class constructors still run one at a time, in metadata order, framework first: the same order
++//   the legacy sweep used, so initialisation-order behaviour cannot change. Preparing methods
++//   executes no code, so that part is spread over several threads.
++//
++// SHARPEMU_WARMUP=legacy restores the reflection sweep; SHARPEMU_WARMUP_THREADS=N sets the number of
++// threads that prepare methods (1 = all on the calling thread).
++public sealed partial class ModuleManager
++{
++    internal enum WarmupMode
++    {
++        Lean,
++        Legacy,
++    }
++
++    internal static WarmupMode SelectedWarmupMode =>
++        string.Equals(Environment.GetEnvironmentVariable("SHARPEMU_WARMUP"), "legacy", StringComparison.OrdinalIgnoreCase)
++            ? WarmupMode.Legacy
++            : WarmupMode.Lean;
++
++    internal static int WarmupThreads()
++    {
++        if (int.TryParse(Environment.GetEnvironmentVariable("SHARPEMU_WARMUP_THREADS"), out var requested) && requested >= 1)
++        {
++            return Math.Min(requested, 64);
++        }
++
++        return Math.Clamp(Environment.ProcessorCount - 1, 1, 6);
++    }
++
++    private readonly record struct WarmPlan(Assembly Assembly, int[] InitTypes, int[] Methods);
++
++    private static void WarmLean(Assembly[] hleAssemblies)
++    {
++        // Framework class constructors first, as the legacy sweep did (no methods: the BCL is
++        // ReadyToRun-compiled and far too large to prepare).
++        var frameworkInitialised = 0;
++        foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
++        {
++            var name = assembly.GetName().Name;
++            if (name is null || !IsFrameworkAssembly(name))
++            {
++                continue;
++            }
++
++            if (TryPlan(assembly, includeMethods: false, out var frameworkPlan))
++            {
++                frameworkInitialised += RunInitializers(frameworkPlan, out _);
++            }
++            else
++            {
++                frameworkInitialised += WarmAssemblyByReflection(assembly, includeMethods: false, out _, out _, out _);
++            }
++        }
++
++        BootTrace.Mark("warm-framework-cctors");
++
++        var plans = new List<WarmPlan>(hleAssemblies.Length);
++        var warmed = 0;
++        var failed = 0;
++        var jitted = 0;
++        var jitFailed = 0;
++        foreach (var assembly in hleAssemblies)
++        {
++            if (TryPlan(assembly, includeMethods: true, out var plan))
++            {
++                warmed += RunInitializers(plan, out var threw);
++                failed += threw;
++                plans.Add(plan);
++            }
++            else
++            {
++                warmed += WarmAssemblyByReflection(assembly, includeMethods: true, out var threw, out var prepared, out var prepareFailed);
++                failed += threw;
++                jitted += prepared;
++                jitFailed += prepareFailed;
++            }
++        }
++
++        BootTrace.Mark("warm-hle-cctors");
++
++        var threads = WarmupThreads();
++        var (preparedCount, prepareFailures) = PrepareMethods(plans, threads);
++        jitted += preparedCount;
++        jitFailed += prepareFailures;
++
++        BootTrace.Mark("warm-hle-prepare");
++        Console.Error.WriteLine(
++            $"[HLE] Warmed {warmed} type initializers ({failed} threw) + JIT-compiled {jitted} methods ({jitFailed} skipped) across {hleAssemblies.Length} HLE assemblies, plus {frameworkInitialised} framework type initializers (lean warm-up, {threads} thread(s)).");
++    }
++
++    // The work list of one assembly, from its metadata. False when the runtime will not hand out
++    // the metadata (the caller falls back to reflection for that assembly).
++    private static unsafe bool TryPlan(Assembly assembly, bool includeMethods, out WarmPlan plan)
++    {
++        plan = default;
++        byte* blob;
++        int length;
++        try
++        {
++            if (!assembly.TryGetRawMetadata(out blob, out length))
++            {
++                return false;
++            }
++        }
++        catch
++        {
++            return false;
++        }
++
++        var reader = new MetadataReader(blob, length);
++        var initTypes = new List<int>();
++        var methods = includeMethods ? new List<int>() : null;
++        foreach (var typeHandle in reader.TypeDefinitions)
++        {
++            // Row 1 is <Module>, which GetTypes() never returned.
++            if (MetadataTokens.GetRowNumber(typeHandle) == 1)
++            {
++                continue;
++            }
++
++            var type = reader.GetTypeDefinition(typeHandle);
++
++            // Type.ContainsGenericParameters for a definition: a nested type of a generic type
++            // redeclares its parent's parameters, so this covers those too.
++            if (type.GetGenericParameters().Count > 0)
++            {
++                continue;
++            }
++
++            var needsInit = false;
++            foreach (var methodHandle in type.GetMethods())
++            {
++                var method = reader.GetMethodDefinition(methodHandle);
++                if (!needsInit && reader.StringComparer.Equals(method.Name, ".cctor"))
++                {
++                    needsInit = true;
++                }
++
++                if (methods is null ||
++                    (method.Attributes & MethodAttributes.Abstract) != 0 ||
++                    (method.ImplAttributes & MethodImplAttributes.InternalCall) != 0 ||
++                    method.GetGenericParameters().Count > 0)
++                {
++                    continue;
++                }
++
++                methods.Add(MetadataTokens.GetToken(methodHandle));
++            }
++
++            if (!needsInit)
++            {
++                foreach (var fieldHandle in type.GetFields())
++                {
++                    var attributes = reader.GetFieldDefinition(fieldHandle).Attributes;
++                    if ((attributes & (FieldAttributes.Static | FieldAttributes.Literal)) == FieldAttributes.Static)
++                    {
++                        needsInit = true;
++                        break;
++                    }
++                }
++            }
++
++            if (needsInit)
++            {
++                initTypes.Add(MetadataTokens.GetToken(typeHandle));
++            }
++        }
++
++        plan = new WarmPlan(assembly, initTypes.ToArray(), methods?.ToArray() ?? Array.Empty<int>());
++        return true;
++    }
++
++    private static int RunInitializers(in WarmPlan plan, out int failed)
++    {
++        failed = 0;
++        var warmed = 0;
++        var module = plan.Assembly.ManifestModule.ModuleHandle;
++        foreach (var token in plan.InitTypes)
++        {
++            try
++            {
++                RuntimeHelpers.RunClassConstructor(module.ResolveTypeHandle(token));
++                warmed++;
++            }
++            catch
++            {
++                // A throw here beats a guest-thread fail-fast later; swallow and continue.
++                failed++;
++            }
++        }
++
++        return warmed;
++    }
++
++    private static (int Prepared, int Failed) PrepareMethods(List<WarmPlan> plans, int threads)
++    {
++        var total = 0;
++        foreach (var plan in plans)
++        {
++            total += plan.Methods.Length;
++        }
++
++        var modules = new ModuleHandle[total];
++        var tokens = new int[total];
++        var next = 0;
++        foreach (var plan in plans)
++        {
++            var module = plan.Assembly.ManifestModule.ModuleHandle;
++            foreach (var token in plan.Methods)
++            {
++                modules[next] = module;
++                tokens[next] = token;
++                next++;
++            }
++        }
++
++        var prepared = 0;
++        var failed = 0;
++        var cursor = 0;
++        const int Chunk = 64;
++
++        void Drain()
++        {
++            var localPrepared = 0;
++            var localFailed = 0;
++            while (true)
++            {
++                var start = Interlocked.Add(ref cursor, Chunk) - Chunk;
++                if (start >= total)
++                {
++                    break;
++                }
++
++                var end = Math.Min(start + Chunk, total);
++                for (var i = start; i < end; i++)
++                {
++                    try
++                    {
++                        RuntimeHelpers.PrepareMethod(modules[i].ResolveMethodHandle(tokens[i]));
++                        localPrepared++;
++                    }
++                    catch
++                    {
++                        localFailed++;
++                    }
++                }
++            }
++
++            Interlocked.Add(ref prepared, localPrepared);
++            Interlocked.Add(ref failed, localFailed);
++        }
++
++        if (threads <= 1 || total < Chunk * 2)
++        {
++            Drain();
++            return (prepared, failed);
++        }
++
++        var workers = new Thread[threads - 1];
++        for (var i = 0; i < workers.Length; i++)
++        {
++            workers[i] = new Thread(Drain, maxStackSize: 1024 * 1024)
++            {
++                IsBackground = true,
++                Name = $"hle-warmup-{i + 1}",
++            };
++            workers[i].Start();
++        }
++
++        Drain();
++        foreach (var worker in workers)
++        {
++            worker.Join();
++        }
++
++        return (prepared, failed);
++    }
++
++    // The legacy per-assembly sweep, for an assembly whose metadata the runtime will not expose.
++    private static int WarmAssemblyByReflection(Assembly assembly, bool includeMethods, out int failed, out int prepared, out int prepareFailed)
++    {
++        failed = 0;
++        prepared = 0;
++        prepareFailed = 0;
++        var warmed = 0;
++        Type[] types;
++        try
++        {
++            types = assembly.GetTypes();
++        }
++        catch (ReflectionTypeLoadException ex)
++        {
++            types = ex.Types.Where(t => t is not null).ToArray()!;
++        }
++        catch
++        {
++            return 0;
++        }
++
++        const BindingFlags allMembers = BindingFlags.Public | BindingFlags.NonPublic |
++            BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly;
++
++        foreach (var type in types)
++        {
++            if (type is null || type.ContainsGenericParameters)
++            {
++                continue;
++            }
++
++            try
++            {
++                RuntimeHelpers.RunClassConstructor(type.TypeHandle);
++                warmed++;
++            }
++            catch
++            {
++                failed++;
++            }
++
++            if (!includeMethods)
++            {
++                continue;
++            }
++
++            MethodBase[] members;
++            try
++            {
++                members = type.GetConstructors(allMembers).Concat<MethodBase>(type.GetMethods(allMembers)).ToArray();
++            }
++            catch
++            {
++                continue;
++            }
++
++            foreach (var member in members)
++            {
++                if (member.ContainsGenericParameters || member.IsAbstract || member.MethodImplementationFlags.HasFlag(MethodImplAttributes.InternalCall))
++                {
++                    continue;
++                }
++
++                try
++                {
++                    RuntimeHelpers.PrepareMethod(member.MethodHandle);
++                    prepared++;
++                }
++                catch
++                {
++                    prepareFailed++;
++                }
++            }
++        }
++
++        return warmed;
++    }
++}
+diff --git a/src/SharpEmu.HLE/ModuleManager.cs b/src/SharpEmu.HLE/ModuleManager.cs
+index 0cb5aa0..a6604d8 100644
+--- a/src/SharpEmu.HLE/ModuleManager.cs
++++ b/src/SharpEmu.HLE/ModuleManager.cs
+@@ -7,7 +7,7 @@ using System.Runtime.CompilerServices;
+ 
+ namespace SharpEmu.HLE;
+ 
+-public sealed class ModuleManager : IModuleManager
++public sealed partial class ModuleManager : IModuleManager
+ {
+     private readonly ConcurrentDictionary<string, Delegate> _dispatchTable = new(StringComparer.Ordinal);
+     private readonly ConcurrentDictionary<string, ExportedFunction> _exportTable = new(StringComparer.Ordinal);
+@@ -72,6 +72,12 @@ public sealed class ModuleManager : IModuleManager
+         BootTrace.Mark("warm-start");
+         assemblies = WithGuestReachableDependencies(assemblies);
+         BootTrace.Mark("warm-dependencies-resolved");
++        if (SelectedWarmupMode == WarmupMode.Lean)
++        {
++            WarmLean(assemblies);
++            return;
++        }
++
+         var bclWarmed = WarmFrameworkTypeInitializers();
+         BootTrace.Mark("warm-framework-cctors");
+         var cctorTicks = 0L;
+@@ -164,7 +170,7 @@ public sealed class ModuleManager : IModuleManager
+         }
+ 
+         Console.Error.WriteLine(
+-            $"[HLE] Warmed {warmed} type initializers ({failed} threw) + JIT-compiled {jitted} methods ({jitFailed} skipped) across {assemblies.Length} HLE assemblies, plus {bclWarmed} framework type initializers.");
++            $"[HLE] Warmed {warmed} type initializers ({failed} threw) + JIT-compiled {jitted} methods ({jitFailed} skipped) across {assemblies.Length} HLE assemblies, plus {bclWarmed} framework type initializers (legacy warm-up).");
+     }
+ 
+     // Framework .cctors too (but not JIT — the BCL is too large).
+-- 
+2.39.5
+
