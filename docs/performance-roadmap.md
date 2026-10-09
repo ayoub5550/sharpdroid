@@ -110,4 +110,17 @@ results land here as they are produced, with where and how.
 
   the legacy row reproduces the history above (2.4–2.5 s cold, 1.50–1.56 s warm), so the harness measures what the earlier runs did. **NativeAOT cold is faster than ReadyToRun with a warm code cache.** where the 0.91 s goes: about 0.2 s before `Main` (FEX, the loader), 0.06 s to the runtime, the export registry 0.09 s, framework initialisers 0.18 s, HLE initialisers 0.21 s, then the refusal and exit. the same bench on Test Lab's arm64 Android 15 emulator (`MediumPhone.arm`) gives 2.07 / 1.77 / 0.67 s cold and 1.25 / 0.98 / 0.47 s warm for the first three rows. the nexus row also shows the compact address-space layout carrying the new memory model: `layout=compact top=0x3C00000000`, with nexus' 64–1008 GiB pre-reservation off on such hosts.
 - **native arm64 SharpEmu, step 0** (fork `perf/android/arm64-step0`: NativeAOT `linux-bionic-arm64`, no host layer, no FEX, guest execution refused): on the Xiaomi 14 it boots to the refusal in **0.31 s** against 0.87 s for the same source as x86-64 under FEX (2.9×; 2.41 s for today's R2R payload, 7.8×), and translates a new shader 3.9× faster the first time and 1.2–1.7× faster in steady state. the table and what it means are in [`native-arm64-backend.md`](native-arm64-backend.md#step-0-measured).
+- **the FexCpuBackend proof of concept** (`host/sharpfex/`, `poc/fexpoc/`): FEXCore as a library inside a native arm64 NativeAOT process meets SharpEmu's contract. Every check passes in the VM, including:
+  - imports with the full register contract, and guest pointers read directly by C#;
+  - nested callbacks, context transfer, and block/resume;
+  - 4 guest threads × 10⁶ imports under 3,997 forced GCs;
+  - unaligned atomics, and .NET's own fault handling.
+
+  On the Xiaomi 14 every check passes too. There:
+  - an import round trip ties today's design (41.4 vs 40.3 ns), and FEX's own boundary is 70 % of it;
+  - host→guest callbacks are 2.8× slower;
+  - the C# side is 2.2–2.9× faster;
+  - guest code costs the same.
+
+  The Test Lab virtual device had shown a 2.7× import win that the phone did not confirm. Details: [`native-arm64-backend.md`](native-arm64-backend.md#the-proof-of-concept-built), [`dry-lab.md`](dry-lab.md).
 - **two x86-64 syscalls the host layer did not pass through**: `getcpu` (309, three calls per boot, from glibc's `sched_getcpu()` because rseq is refused) and `getgroups` (115). both now pass through, the regression set is still 15 of 19 with them, and a payload boot is down to one unhandled syscall, `get_mempolicy` (239), which .NET's NUMA probe asks and reads ENOSYS as *no NUMA* — the right answer on a phone, so it stays unhandled.

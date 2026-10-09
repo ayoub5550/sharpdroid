@@ -1,6 +1,6 @@
 # a native arm64 SharpEmu with FEXCore as a guest-only CPU backend
 
-status: design and cost estimate; **step 0 built and measured on a phone** (2026-10-08, *step 0: measured* below). it is roadmap item #15 in [`performance-roadmap.md`](performance-roadmap.md). **[measured]**, **[source]** and **[estimate]** mean what they mean in that document: an estimate is a reason to measure, not a result.
+status: design and cost estimate; **step 0 built and measured on a phone** (2026-10-08, *step 0: measured* below); **the proof of concept built, and every check passing on a Xiaomi 14** (*the proof of concept: built* below). it is roadmap item #15 in [`performance-roadmap.md`](performance-roadmap.md). **[measured]**, **[source]** and **[estimate]** mean what they mean in that document: an estimate is a reason to measure, not a result.
 
 ## executive summary
 
@@ -43,6 +43,114 @@ what it says: **the largest losses under FEX are cold code** — boot and the fi
 - **.NET crypto on Android.** the framework's crypto initializers load the OpenSSL shim, which finds the system's BoringSSL `libssl.so`, misses `a2d_ASN1_OBJECT` and **aborts the process** (a fail-fast, not an exception). the warm-up skips them on a non-x64 host; SharpEmu's own hashing (SHA-1 NIDs, SHA-256 SPIR-V digests, `RandomExports`) needs a bundled OpenSSL 3 or managed implementations before guest code can run natively.
 - **the NID catalog becomes the critical path**: under FEX the warm-up hides its 154k-entry parse; natively the warm-up takes 74 ms and the boot then waits about 80 ms for the catalog. a precomputed hash table in the binary (or a lazy lookup) removes it.
 - **the VM is the wrong instrument for this ratio.** under TCG the native build boots 2× faster than FEX (12.7 s against 25.6 s) but translates shaders *slower* (about 1.0 s against 0.57 s a shader) — qemu's cost per arm64 instruction is not a CPU's. the VM stays the correctness check; native-against-FEX ratios come from Test Lab.
+
+## the proof of concept: built
+
+**built** (this repo, `host/sharpfex/` and `poc/fexpoc/`, `poc/fexpoc/build.sh`):
+
+- **`libsharpfex.so`**: 3.2 MB stripped. It depends only on bionic's `libc`, `libm`, `libdl` and `liblog`, with libc++ linked statically. Its C ABI is `sharpfex.h` (18 `sfx_*` functions since the callback fast path):
+  - one FEXCore context; guest threads bound to the host threads that create them;
+  - HLE imports through a 13-byte slot: `mov [rsp-8],rcx; mov [rsp-16],r11; syscall; ret`. The slot is identified by the address of its `syscall`, so rax survives too;
+  - host→guest calls through `HandleCallback` + `CALLBACKRET`, nested inside imports;
+  - context transfer by rewriting rip/rsp;
+  - a per-thread escape hatch (`sigsetjmp`) that parks a guest thread inside an import and resumes it with the next `sfx_run`;
+  - exec ranges, plus the JIT guard-page restart and the unaligned-atomic backpatch lifted from `guest_threads.cpp`;
+  - a SIGSEGV/SIGBUS handler that chains everything else to the handler .NET installed before it;
+  - **slot functions** (`sfx_set_slot_fn`): leaf imports called directly on FEX's register array, with nothing copied.
+- **`FexPoc`**: a NativeAOT console app (1.3 MB) that maps a hand-assembled x86-64 blob (`guest.S`, 1,888 bytes of code) at `0x8_0000_0000`. It runs the same guest code and the same C# handler under two models:
+  - **fex**: a native arm64 process, guest through libsharpfex;
+  - **x64**: today's design, SharpEmu's arg-pack trampolines, native on x86 or translated whole by the host layer on arm64.
+
+**contract: all checks pass** in the VM (FEX-2609, 2026-10-08) **[measured]**:
+
+| check | result |
+| --- | --- |
+| six int args + a stack arg + xmm0, and a guest string read by C# **through the guest pointer** | OK |
+| rbx rbp r12–r15 rcx r10 r11 survive an import (rcx/r11 despite `syscall`) | OK |
+| guest → HLE → guest callback → HLE → guest | OK |
+| HLE rewrites rip/rsp (longjmp / fiber shape) | OK |
+| a guest thread parks 4× inside an import and resumes each time | OK |
+| 4 guest threads × 10⁶ imports + 10³ callbacks each, while the main thread forces 3,997 GCs (249 full, compacting) | OK, exact results |
+| an unaligned `lock add` across a 16-byte boundary (backpatched) | OK |
+| .NET's own null dereference still becomes `NullReferenceException` | OK |
+
+**open in the PoC, on purpose:** blocking inside a *nested* host→guest call is refused (`-EDEADLK`); that needs one escape hatch per nesting depth. SMC write protection is not implemented (mtrack with a no-op mark, so `sfx_invalidate` is manual). There are no guest signals.
+
+**VM timings are not results.** The table is TCG, ns per import, median of 3 after a warm-up. It is here only to say what to look for on the phone:
+
+| bench | fex model | x64 model (host layer) |
+| --- | --- | --- |
+| `hle_add`: guest loop of imports, C# `a+b` | 2,070–3,580, once 21,950 | 690–730 |
+| `hle_add_direct`: slot function in C#, no copy | 1,800–1,860 | — |
+| `hle_add_builtin`: slot function in C++ (FEX's boundary alone) | **437–444** | — |
+| `hle_callback`: guest → HLE → guest → HLE → guest | 7,960–13,240 | 930–1,230 |
+| `guest_compute`: no imports (the control) | 7.1–7.5 | 7.1–7.8 |
+
+What the VM does show:
+- **the guest side costs the same in both models** (the control);
+- FEX's own boundary is stable at ~440 ns of TCG time;
+- the managed transition dominates the rest. Identical processes varied 2.1–22 µs on that path, so TCG's cost for that path depends on where things land in memory.
+
+That is the case [`dry-lab.md`](dry-lab.md) rule 5 is for. The decision rule for the phone is written there, before the run.
+
+**On the phone** (Xiaomi 14, FEX-2609, 2026-10-08; the full table and its reading are in [`dry-lab.md`](dry-lab.md#poc-measured-on-houji-2026-10-08)) **[measured]**:
+
+| | fex model | x64 model (today) |
+| --- | --- | --- |
+| import round trip (`hle_add`) | 41.4 ns | 40.3 ns |
+| of which FEX's boundary | 28–31 ns | — |
+| host→guest callback | 141–158 ns | 54 ns |
+| C# body alone | 2.4–3.0 ns | 6.7–6.9 ns |
+| guest code (control) | 4.1–4.4 ns | 4.1 ns |
+
+- Every contract check passes on the phone, under SELinux as the shell uid.
+- The import boundary is a tie, so frames on guest threads gain only from time spent inside HLE bodies (2.2–2.9× faster natively).
+- Callbacks are 2.8× slower and must be fixed first.
+- The cheaper boundary needs the `HLECALL` patch: FEX's own share is 70 % of an import.
+
+The decision taken under the rule: **proceed**, with the next work being:
+1. a callback re-entry that skips the dispatcher prologue;
+2. `HLECALL`;
+3. *h* measured as body time on a real game.
+
+### callback fast path (design; built, not yet measured on a phone)
+
+**What a host→guest call costs today** (`sfx.Callback=legacy`, the default) **[source]**: `sfx_call` saves the light (or full) state, sets the arguments, and calls FEX's `HandleCallback`. That jumps to the dispatcher's callback entry (`Dispatcher.cpp`, `CallbackPtr`), which:
+1. pushes the host callee-saved registers;
+2. bumps `SignalHandlerRefCounter`;
+3. writes `ThunkCallbackRet` to the guest stack;
+4. fills every static register (`FillStaticRegs`: GPRs, XMM, NZCV, FPCR, SVE predicates);
+5. pushes a **dummy** call-return entry `{0, 0}`;
+6. branches to the dispatcher's loop top, which does the L2 page-table lookup.
+
+When the callee returns, its `ret` cannot match the dummy entry. It falls back to the L1 lookup of the `CALLBACKRET` address, an indirect `ret`, and the compiled `0f 3e` block (`BranchOps.cpp`, `CallbackReturn`), which spills everything, fixes rsp, drops the ref count, pops the callee-saved registers and returns to the shim.
+
+**The fast path** (`sfx.Callback=fast`, `FastEntry` in `sharpfex.cpp`) keeps the contract and the `sfx.CallSave=light|full` save/restore exactly, and changes how the shim enters and leaves the guest:
+- **its own entry**, emitted once at `sfx_init` with FEXCore's own `Arm64Emitter`. Reusing `PushCalleeSavedRegisters`, `FillStaticRegs` and `SpillStaticRegs` keeps the register map, AFP and SVE handling identical to the JIT's, across FEX bumps. The shim writes the return address and rip itself; the entry does steps 1, 2 and 4.
+- **a real call-return entry** `{CALLBACKRET's guest address, Landing}` instead of the dummy. The callee's `ret` matches it and lands directly in the shim's `Landing`, which spills, drops the ref count and returns. There is no miss, no lookup of the return address, and no `0f 3e` block.
+- **the target is looked up the way an indirect branch is**: the thread's L1 cache, falling back to the dispatcher's loop top, which compiles on a miss.
+- **bookkeeping**: callbacks are counted per thread and flushed in batches, like imports, with no shared atomic per call. Nested calls skip the TLS store, because the run or call around them has already made the thread current.
+- **the fallback is the same exit.** If the call-return stack is reset under the callee (an invalidation does that), its `ret` reaches `CALLBACKRET` as before. That block unwinds the frame the fast entry pushed, because the entry uses FEX's own push layout. `sfx.Callback=fast-fallback` forces that exit on every return, to test it (and to split the gain between entry and exit).
+
+**What it cannot remove**, and what the phone run has to size **[estimate, to be measured]**:
+- the callee-saved push/pop;
+- the full static-register fill and spill;
+- with FEAT_AFP, **two FPCR writes** per transition (the host must run with NEP/AH/FIZ clear);
+- the managed transitions on both sides.
+
+New rows split them:
+- `call_builtin`: C++ → guest → C++, the entry and exit alone;
+- `call_top`: the same from C#, measured in both models;
+- `hle_callback_builtin`: the nested call with slot 1 handled in C++;
+- `sfx.AFP=0`: hides FEAT_AFP from FEX, which removes the FPCR writes at every transition. It is a diagnostic, not a default: without AFP, scalar SSE costs more instructions. The new `guest_sse` row (a pure-guest scalar-SSE loop, checked bit-exact against C#) measures that cost in the same process.
+
+**Thunk slots: the import as FEX's own thunk op** (the cheaper-import prototype, stock FEX, no patch). `0f 3f` + a 32-byte name compiles into an inline host call in the middle of a block. FEX spills the static registers (not NZCV), calls `ThunkHandler::LookupThunk(name)(rdi)`, fills them back, then pops the return address and returns through the call-return stack. Compared with the `syscall` slot, that drops:
+- the block exit;
+- the separate `ret` block;
+- the rcx/r11 dance;
+- the virtual `SyscallHandler` hop and its range checks.
+
+The shim's `ThunkHandler` recognises names `SFXTHUNK<index>`. Emitted stubs add the frame (x28) and the index, and route the call exactly like import slot *index*: its slot function if set, else the handler. The op returns to `[rsp]` by itself, so a thunk slot cannot block or transfer control; it is for leaf imports, the same class as slot functions. In the PoC, slot 6 is a `jmp` to a thunk slot. Rows `hle_add_thunk`, `hle_add_thunk_direct` and `hle_add_thunk_builtin` pair with `hle_add`, `hle_add_direct` and `hle_add_builtin`. The decision rule for both prototypes is in [`dry-lab.md`](dry-lab.md#callback-fast-path-rule-written-before-the-phone-run).
 
 ## 1. how guest code runs today (`DirectExecutionBackend`, x64 only)
 

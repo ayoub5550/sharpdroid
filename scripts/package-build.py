@@ -117,7 +117,7 @@ def entry():
                         help="publish with NativeAOT instead of ReadyToRun: one native linux-x64 "
                              "binary with no JIT and no CoreCLR, headless. needs a fork that has "
                              "the SharpEmuHeadless / SharpEmuNativeAot switches. boots about 3x "
-                             "faster under FEX (docs/performance-roadmap.md); not yet run with a game.")
+                             "faster under FEX (docs/performance-roadmap.md); runs DOOM (poc/ps5-doom).")
     parser.add_argument("--compress", action="store_true",
                         help="keep the csproj's single-file compression. the payload on disk is less "
                              "than half the size and every launch spends about 0.45 s on a phone "
